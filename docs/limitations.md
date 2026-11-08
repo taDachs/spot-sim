@@ -39,7 +39,6 @@ Code pointers: API semantics in `src/spot_sim_core` (`api_server.cpp`,
 
 | Missing | Current behaviour | Planned |
 |---|---|---|
-| `ArmJointMoveCommand`, `ArmCartesianCommand`, `ArmVelocityCommand`, gaze (driver: `arm_joint_commands`, `arm_pose_commands`, `arm_velocity_commands`, hand poses through `robot_command`) | UNSUPPORTED | Slice 9 (analytic IK, trajectories) |
 | Hand camera (`hand_color_image`, `hand_depth`, `hand_depth_in_hand_color_frame`) | Not served, so the driver's hand topics stay empty | Slice 10 |
 | Grasping: `ManipulationApi` (PickObject*, WalkToObject*), `ManipulationApiFeedback` | UNIMPLEMENTED | Slice 11 (kinematic attach); WalkToObject needs the go-to base mode |
 | Arm surface contact (driver: `arm_surface_contact` action) | UNIMPLEMENTED | Not planned |
@@ -50,7 +49,12 @@ Code pointers: API semantics in `src/spot_sim_core` (`api_server.cpp`,
 | Gripper camera parameters | Stored and reported back, no effect on images | |
 | Gripperless arm (`gripperless:=true`) | Not offered | Small: pass the xacro arg, drop `gripper-camera-param` |
 | Arm in `InverseKinematicsService` | Always NO_SOLUTION_FOUND | Could reuse the slice 9 IK |
-| Named arm poses | Approximations, not measured on a real robot | |
+| Stow and carry poses | Approximations, not measured on a real robot (ready is the robot's) | |
+| Arm trajectories: point velocities, `maximum_acceleration`, `pos_interpolation` / `ang_interpolation` | Ignored: linear in joints, linear + slerp in Cartesian space; too-fast points are slowed to the speed limits (1 rad/s, 0.5 m/s, 1 rad/s by default) | `spot_sim_core/arm_motion.cpp` |
+| Root and task frames other than body, flat_body, odom, vision, gpe (e.g. `hand`, `arm0.link_sh0`, fiducials) | STATUS_UNKNOWN_FRAME (Cartesian velocity also accepts `hand`) | |
+| Gaze: target and tool trajectories over time | Only their last point is used; without a tool trajectory the hand keeps its place relative to the body | |
+| Unreachable poses | The arm stops at the last reachable setpoint and reports STALLED; no body assist, no planning around joint limits | |
+| Arm velocity: angular velocity "relative to odom", acceleration limits | Angular velocity is applied in the hand frame relative to the body; no acceleration limit | |
 
 ## Cameras (`IMAGES=true`)
 
@@ -79,3 +83,4 @@ Code pointers: API semantics in `src/spot_sim_core` (`api_server.cpp`,
 - **Wall-clock timers:** the lease-staleness and E-Stop timeouts run on wall-clock time, because the SDK's keep-alive loops do. At RTF ≠ 1 they don't scale with simulation time.
 - **Authentication:** one configured user, the test CA from spot_wrapper, and a fixed token.
 - **One robot per sim:** a single robot per sim instance on port 443.
+- **Gazebo world reset** (GUI reset button, `/world/.../control` reset): Gazebo re-creates `SpotApiSystem`, so the Spot API restarts from scratch. That means a new lease epoch, no E-Stop endpoint and the robot clock back at 0. The driver can't recover and keeps logging connection errors; restart the stack (`docker compose up -d --force-recreate`). To support resets, `SpotApiSystem` would implement `ISystemReset`: keep the server and firmware, reset the robot's pose and joints, and handle the clock jump (time sync and command end times).

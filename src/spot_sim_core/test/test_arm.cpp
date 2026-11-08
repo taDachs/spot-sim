@@ -259,7 +259,7 @@ TEST(ArmCommands, RejectedWithoutArmOrPower) {
   EXPECT_EQ(arm.Command(Named(api::NamedArmPositionsCommand::POSITIONS_READY), LeaseOk(), false, true, 0s).status(),
             api::RobotCommandResponse::STATUS_NOT_POWERED_ON);
   EXPECT_EQ(arm.Command(Named(api::NamedArmPositionsCommand::POSITIONS_UNKNOWN), LeaseOk(), true, true, 0s).status(),
-            api::RobotCommandResponse::STATUS_UNSUPPORTED);
+            api::RobotCommandResponse::STATUS_INVALID_REQUEST);
 }
 
 TEST(ArmCommands, NamedPositionsMoveTheArmAndCompleteOnArrival) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 
 #include "spot_sim_core/arm.hpp"
 #include "spot_sim_core/geometry.hpp"
@@ -50,6 +51,18 @@ struct ArmKinematics {
   /// Pose of the wrist (link_wr1) and of the hand frame in the body frame.
   static Pose BodyTWrist(const ArmJoints& q);
   static Pose BodyTHand(const ArmJoints& q);
+
+  /// The hand frame in the wrist (link_wr1) frame: the default tool.
+  static Pose WristTHand() { return Pose{Vec3{kHandOffset, 0.0, 0.0}, Quat{}}; }
+
+  /// Inverse kinematics (closed form: shoulder yaw, a planar shoulder-elbow
+  /// pair, a roll-pitch-roll spherical wrist). Of the up to eight solutions
+  /// within the joint limits, returns the one closest to `near` (largest
+  /// joint difference); nullopt if the pose is out of reach.
+  static std::optional<ArmJoints> InverseWrist(const Pose& body_T_wrist, const ArmJoints& near);
+  static std::optional<ArmJoints> InverseHand(const Pose& body_T_hand, const ArmJoints& near) {
+    return InverseWrist(body_T_hand * WristTHand().Inverse(), near);
+  }
 
   /// Gripper opening in percent (0 closed, 100 open), as ManipulatorState reports it.
   static double GripperOpenPercentage(double f1x);

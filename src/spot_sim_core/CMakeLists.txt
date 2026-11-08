@@ -14,6 +14,7 @@ find_package(JPEG REQUIRED)
 add_library(${PROJECT_NAME} SHARED
   src/api_server.cpp
   src/arm_kinematics.cpp
+  src/arm_motion.cpp
   src/commands.cpp
   src/directory.cpp
   src/estop.cpp
@@ -44,6 +45,7 @@ if(BUILD_TESTING)
   ament_add_gtest(${PROJECT_NAME}_test
     test/test_api_server.cpp
     test/test_arm.cpp
+    test/test_arm_motion.cpp
     test/test_commands.cpp
     test/test_directory.cpp
     test/test_estop.cpp

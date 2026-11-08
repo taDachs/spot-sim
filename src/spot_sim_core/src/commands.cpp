@@ -16,7 +16,6 @@ namespace {
 constexpr std::size_t kMaxRememberedCommands = 1024;
 constexpr double kArmReachedTolerance = 0.01;      ///< [rad]
 constexpr double kStowedTolerance = 0.05;          ///< [rad], as ManipulatorState.stow_state
-constexpr double kDefaultArmSpeed = 1.0;           ///< fastest joint [rad/s]
 constexpr double kDefaultGripperSpeed = 3.0;       ///< [rad/s]
 
 /// Tightens the robot's limits with MobilityParams.vel_limit.
@@ -87,7 +86,6 @@ void CommandSystem::OverrideArm() {
     record->arm->overridden = true;
   }
   active_arm_.reset();
-  active_named_.reset();
 }
 
 void CommandSystem::OverrideGripper() {
@@ -98,10 +96,7 @@ void CommandSystem::OverrideGripper() {
 }
 
 void CommandSystem::HoldArm() {
-  OverrideArm();
-  if (measured_arm_) {
-    arm_.joints = measured_arm_->joints;
-  }
+  StartArm(0, ArmMotion::Hold(measured_arm_ ? measured_arm_->joints : arm_.joints));
 }
 
 void CommandSystem::HoldGripper() {
@@ -112,12 +107,32 @@ void CommandSystem::HoldGripper() {
 }
 
 void CommandSystem::StowArm() {
-  if (!has_arm_ || active_named_ == api::NamedArmPositionsCommand::POSITIONS_STOW) {
+  if (!has_arm_ ||
+      (arm_motion_ && arm_motion_->named_position() == api::NamedArmPositionsCommand::POSITIONS_STOW)) {
     return;
   }
+  StartArm(0, ArmMotion::ToJoints(ArmKinematics::Stow(), api::NamedArmPositionsCommand::POSITIONS_STOW));
+}
+
+ArmContext CommandSystem::CurrentArmContext() const {
+  return ArmContext{measured_arm_ ? measured_arm_->joints : arm_.joints, odom_T_body_};
+}
+
+void CommandSystem::StartArm(uint32_t id, ArmMotion motion) {
   OverrideArm();
-  arm_.joints = ArmKinematics::Stow();
-  arm_.max_joint_speed = kDefaultArmSpeed;
+  arm_motion_ = std::make_shared<ArmMotion>(std::move(motion));
+  if (id != 0) {
+    records_[id].arm = ArmPart{arm_motion_};
+    active_arm_ = id;
+  }
+  ApplyArm();
+}
+
+void CommandSystem::ApplyArm() {
+  if (arm_motion_) {
+    arm_.joints = arm_motion_->setpoint();
+    arm_.max_joint_speed = arm_motion_->max_joint_speed();
+  }
 }
 
 bool CommandSystem::ArmStowed() const {
@@ -214,10 +229,13 @@ api::RobotCommandResponse CommandSystem::Command(const api::RobotCommandRequest&
       return reject(api::RobotCommandResponse::STATUS_INVALID_REQUEST, "empty synchronized command");
     }
     // Check every part before executing any.
+    std::optional<ArmMotion> arm_motion;
     if (arm_part) {
-      if (const auto error = CheckArm(sync.arm_command())) {
-        return reject(api::RobotCommandResponse::STATUS_UNSUPPORTED, error->c_str());
+      auto created = ArmMotion::Create(sync.arm_command(), CurrentArmContext(), now, clock_synced);
+      if (const auto* rejection = std::get_if<ArmMotion::Rejection>(&created)) {
+        return reject(rejection->status, rejection->message.c_str());
       }
+      arm_motion = std::move(std::get<ArmMotion>(created));
     }
     if (gripper_part) {
       if (const auto error = CheckGripper(sync.gripper_command())) {
@@ -240,8 +258,8 @@ api::RobotCommandResponse CommandSystem::Command(const api::RobotCommandRequest&
       response.set_robot_command_id(id);
       response.set_status(api::RobotCommandResponse::STATUS_OK);
     }
-    if (arm_part) {
-      StartArm(id, sync.arm_command());
+    if (arm_motion) {
+      StartArm(id, std::move(*arm_motion));
     }
     if (gripper_part) {
       StartGripper(id, sync.gripper_command());
@@ -293,19 +311,6 @@ api::RobotCommandResponse CommandSystem::Mobility(const api::MobilityCommand::Re
   return reject(api::RobotCommandResponse::STATUS_UNSUPPORTED, "mobility command not simulated yet");
 }
 
-std::optional<std::string> CommandSystem::CheckArm(const api::ArmCommand::Request& request) {
-  if (request.has_named_arm_position_command()) {
-    if (request.named_arm_position_command().position() == api::NamedArmPositionsCommand::POSITIONS_UNKNOWN) {
-      return "named_arm_position_command needs a position";
-    }
-    return std::nullopt;
-  }
-  if (request.has_arm_stop_command()) {
-    return std::nullopt;
-  }
-  return "arm command not simulated yet";
-}
-
 std::optional<std::string> CommandSystem::CheckGripper(const api::GripperCommand::Request& request) {
   if (!request.has_claw_gripper_command()) {
     return "gripper command not simulated";
@@ -314,35 +319,6 @@ std::optional<std::string> CommandSystem::CheckGripper(const api::GripperCommand
     return "claw_gripper_command needs a trajectory point";
   }
   return std::nullopt;
-}
-
-void CommandSystem::StartArm(uint32_t id, const api::ArmCommand::Request& request) {
-  OverrideArm();
-  ArmPart part;
-  if (request.has_named_arm_position_command()) {
-    const auto position = request.named_arm_position_command().position();
-    part.kind = ArmKind::kNamed;
-    active_named_ = position;
-    switch (position) {
-      case api::NamedArmPositionsCommand::POSITIONS_STOW:
-        arm_.joints = ArmKinematics::Stow();
-        break;
-      case api::NamedArmPositionsCommand::POSITIONS_READY:
-        arm_.joints = ArmKinematics::Ready();
-        break;
-      default:  // CheckArm() rejected UNKNOWN
-        arm_.joints = ArmKinematics::Carry();
-        break;
-    }
-    arm_.max_joint_speed = kDefaultArmSpeed;
-  } else {  // arm_stop_command
-    part.kind = ArmKind::kStop;
-    if (measured_arm_) {
-      arm_.joints = measured_arm_->joints;
-    }
-  }
-  records_[id].arm = part;
-  active_arm_ = id;
 }
 
 void CommandSystem::StartGripper(uint32_t id, const api::GripperCommand::Request& request) {
@@ -493,17 +469,11 @@ api::RobotCommandFeedbackResponse CommandSystem::Feedback(const api::RobotComman
   }
   if (record.arm) {
     auto* arm = feedback->mutable_synchronized_feedback()->mutable_arm_command_feedback();
-    arm->set_status(processing_unless(record.arm->overridden));
-    switch (record.arm->kind) {
-      case ArmKind::kNamed:
-        arm->mutable_named_arm_position_feedback()->set_status(
-            record.arm->reached ? api::NamedArmPositionsCommand::Feedback::STATUS_COMPLETE
-                                : api::NamedArmPositionsCommand::Feedback::STATUS_IN_PROGRESS);
-        break;
-      case ArmKind::kStop:
-        arm->mutable_arm_stop_feedback();
-        break;
-    }
+    const bool timed_out = record.arm->motion->progress() == ArmMotion::Progress::kTimedOut;
+    arm->set_status(record.arm->overridden ? api::RobotCommandFeedbackStatus::STATUS_COMMAND_OVERRIDDEN
+                    : timed_out            ? api::RobotCommandFeedbackStatus::STATUS_COMMAND_TIMED_OUT
+                                           : api::RobotCommandFeedbackStatus::STATUS_PROCESSING);
+    record.arm->motion->FillFeedback(arm);
   }
   if (record.gripper) {
     auto* gripper = feedback->mutable_synchronized_feedback()->mutable_gripper_command_feedback();
@@ -516,10 +486,12 @@ api::RobotCommandFeedbackResponse CommandSystem::Feedback(const api::RobotComman
 }
 
 void CommandSystem::Step(RobotTime now, api::EstopStopLevel estop_level, PowerSystem& power,
-                         const LocomotionStatus& status, const std::optional<ArmSample>& arm) {
+                         const LocomotionStatus& status, const std::optional<ArmSample>& arm,
+                         const Pose& odom_T_body) {
   if (arm) {
     measured_arm_ = arm;
   }
+  odom_T_body_ = odom_T_body;
 
   // Velocity commands end at their end time; the robot then stands still.
   if (Record* record = Find(active_); record && record->kind == Kind::kVelocity && now >= record->end_time) {
@@ -556,9 +528,9 @@ void CommandSystem::Step(RobotTime now, api::EstopStopLevel estop_level, PowerSy
 
   // Arm and gripper progress.
   if (measured_arm_) {
-    if (Record* record = Find(active_arm_); record && record->arm && !record->arm->reached &&
-                                            measured_arm_->joints.MaxDifference(arm_.joints) < kArmReachedTolerance) {
-      record->arm->reached = true;
+    if (arm_motion_) {
+      arm_motion_->Step(now, CurrentArmContext());
+      ApplyArm();
     }
     if (Record* record = Find(active_gripper_); record && record->gripper && !record->gripper->reached &&
                                                 std::abs(measured_arm_->gripper - arm_.gripper) < kArmReachedTolerance) {
@@ -577,7 +549,9 @@ void CommandSystem::Step(RobotTime now, api::EstopStopLevel estop_level, PowerSy
     }
     locomotion_.mode = LocomotionMode::kSit;
     if (has_arm_) {
-      HoldArm();
+      if (!arm_motion_ || arm_motion_->kind() != ArmMotion::Kind::kStop || active_arm_) {
+        HoldArm();
+      }
       HoldGripper();
     }
   }

@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -14,6 +15,7 @@
 #include <bosdyn/api/spot/robot_command.pb.h>
 
 #include "spot_sim_core/arm.hpp"
+#include "spot_sim_core/arm_motion.hpp"
 #include "spot_sim_core/locomotion.hpp"
 #include "spot_sim_core/power.hpp"
 #include "spot_sim_core/robot_state.hpp"
@@ -40,7 +42,8 @@ struct VelocityLimits {
 /// Supported so far: mobility stand / sit / stop / se2_velocity (with
 /// MobilityParams body_control posture and velocity limits), full-body stop,
 /// safe power off and self-right; with an arm, named arm positions (stow,
-/// ready, carry), arm stop and the claw gripper.
+/// ready, carry), arm stop, joint moves, Cartesian moves, arm velocity and
+/// gaze (see ArmMotion), and the claw gripper.
 ///
 /// Like on the robot, a synchronized command has independent mobility, arm
 /// and gripper parts: a new command overrides only the parts it contains
@@ -70,10 +73,11 @@ class CommandSystem {
                                                      const LocomotionStatus& status) const;
 
   /// Advances command execution: expires velocity commands, sequences safe
-  /// power off and SETTLE_THEN_CUT, tracks arm progress (`arm`: the arm as
-  /// measured, robots with an arm only).
+  /// power off and SETTLE_THEN_CUT, moves the arm along (`arm`: the arm as
+  /// measured, robots with an arm only; `odom_T_body`: the body pose).
   void Step(RobotTime now, bosdyn::api::EstopStopLevel estop_level, PowerSystem& power,
-            const LocomotionStatus& status, const std::optional<ArmSample>& arm = std::nullopt);
+            const LocomotionStatus& status, const std::optional<ArmSample>& arm = std::nullopt,
+            const Pose& odom_T_body = Pose{});
 
   /// Current target for the locomotion base.
   LocomotionCommand Locomotion(bool motors_on) const;
@@ -83,12 +87,10 @@ class CommandSystem {
 
  private:
   enum class Kind { kStand, kSit, kMobilityStop, kVelocity, kFullBodyStop, kSafePowerOff, kSelfRight };
-  enum class ArmKind { kNamed, kStop };
 
   struct ArmPart {
-    ArmKind kind = ArmKind::kStop;
+    std::shared_ptr<const ArmMotion> motion;
     bool overridden = false;
-    bool reached = false;  ///< the arm got to the target while this command was active
   };
   struct GripperPart {
     bool overridden = false;
@@ -113,10 +115,12 @@ class CommandSystem {
                                              const bosdyn::api::spot::MobilityParams& params, bool clock_synced,
                                              RobotTime now, double odom_yaw,
                                              bosdyn::api::RobotCommandResponse response);
-  /// Validates an arm or gripper request; an error message if it cannot be executed.
-  static std::optional<std::string> CheckArm(const bosdyn::api::ArmCommand::Request& request);
+  /// Validates a gripper request; an error message if it cannot be executed.
   static std::optional<std::string> CheckGripper(const bosdyn::api::GripperCommand::Request& request);
-  void StartArm(uint32_t id, const bosdyn::api::ArmCommand::Request& request);
+  ArmContext CurrentArmContext() const;
+  /// Makes `motion` drive the arm (recorded under command `id` unless 0).
+  void StartArm(uint32_t id, ArmMotion motion);
+  void ApplyArm();
   void StartGripper(uint32_t id, const bosdyn::api::GripperCommand::Request& request);
 
   void SetPosture(const BodyPosture& posture);
@@ -145,10 +149,11 @@ class CommandSystem {
 
   bool has_arm_ = false;
   ArmCommand arm_;  ///< arm and gripper setpoints (motors_on filled in by Arm())
+  std::shared_ptr<ArmMotion> arm_motion_;  ///< what the arm is doing (also internal stow / hold)
   std::optional<uint32_t> active_arm_;      ///< command currently driving the arm
-  std::optional<bosdyn::api::NamedArmPositionsCommand::Positions> active_named_;
   std::optional<uint32_t> active_gripper_;  ///< command currently driving the gripper
   std::optional<ArmSample> measured_arm_;
+  Pose odom_T_body_;
 };
 
 }  // namespace spot_sim

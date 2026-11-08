@@ -32,14 +32,16 @@ Robot::Robot(RobotConfig config) : config_(std::move(config)), snapshot_(Sitting
 void Robot::Step(RobotTime now) {
   now_ns_.store(now.count(), std::memory_order_release);
   std::optional<ArmSample> arm;
+  Pose odom_T_body;
   {
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
     arm = snapshot_.arm;
+    odom_T_body = snapshot_.odom_T_body;
   }
   std::lock_guard<std::mutex> lock(firmware_mutex_);
   const auto estop_level = firmware_.estop.StopLevel(WallNow());
   firmware_.power.Step(estop_level, now);
-  firmware_.commands.Step(now, estop_level, firmware_.power, firmware_.locomotion, arm);
+  firmware_.commands.Step(now, estop_level, firmware_.power, firmware_.locomotion, arm, odom_T_body);
 }
 
 ArmCommand Robot::Arm() {
