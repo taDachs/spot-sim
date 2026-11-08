@@ -17,6 +17,8 @@
 #   RGB_CAMERAS=true     the driver's rgb_cameras parameter: false requests greyscale images
 #   DRIVER_ARGS          extra spot_driver.launch.py arguments (config/driver_launch.sh)
 #   SPOT_NAME, ROS_DOMAIN_ID, SPOT_USERNAME, SPOT_PASSWORD
+#
+# What is not simulated (yet): docs/limitations.md
 
 name: spot-sim
 
