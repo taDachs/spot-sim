@@ -1,0 +1,32 @@
+# spot_ros2 driver configuration for the simulator.
+# Connection settings (SPOT_IP, SPOT_CERTIFICATE, BOSDYN_CLIENT_USERNAME/PASSWORD)
+# come from the environment set in compose.yaml and take precedence over these.
+/**:
+  ros__parameters:
+    username: "user"
+    password: "password"
+    hostname: "sim"
+    certificate: "/certs/ca.crt"
+
+    metrics_rate: 0.04
+    lease_rate: 1.0
+    async_tasks_rate: 10.0
+    robot_state_rate: 50.0
+    image_rate: 15.0
+
+    auto_claim: False
+    auto_power_on: False
+    auto_stand: False
+
+    # The driver registers a software E-Stop on claim and keeps it alive; if the
+    # driver stops checking in for estop_timeout (wall) seconds, motor power is cut.
+    estop_timeout: 9.0
+    start_estop: True
+
+    preferred_odom_frame: "odom"
+    tf_root: "odom"
+
+    cmd_duration: 0.25
+    rgb_cameras: True
+    initialize_spot_cam: False
+    use_velodyne: False

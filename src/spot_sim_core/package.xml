@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>spot_sim_core</name>
+  <version>0.1.0</version>
+  <description>Simulated Spot "firmware": Spot API semantics (time sync, directory, robot state, leases, E-Stop, power, commands) without Gazebo dependencies.</description>
+  <maintainer email="max.schik@googlemail.com">Max Schik</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>spot_sim_api_protos</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

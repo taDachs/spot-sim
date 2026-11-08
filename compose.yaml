@@ -1,0 +1,115 @@
+# Spot simulator + unmodified spot_ros2 driver.
+#
+#   docker compose up                              # headless sim + driver
+#   docker compose --profile gui up                # ... plus Gazebo GUI and RViz on your display
+#   docker compose --profile test run --rm e2e     # end-to-end tests against the running stack
+#
+# Knobs (environment or .env): WORLD, RTF, USE_SIM_TIME, IMAGES, SPOT_NAME, ROS_DOMAIN_ID.
+
+name: spot-sim
+
+x-ros-env: &ros-env
+  ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}
+  RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+  BOSDYN_CLIENT_USERNAME: ${SPOT_USERNAME:-user}
+  BOSDYN_CLIENT_PASSWORD: ${SPOT_PASSWORD:-password}
+
+# Test CA + per-authority certificates shipped with spot_wrapper (valid until 3023).
+x-certs: &certs ./spot_ros2/spot_wrapper/spot_wrapper/testing/credentials:/certs:ro
+
+# Gazebo transport discovery: the GUI must share the server's partition.
+x-gz-env: &gz-env
+  GZ_PARTITION: spot_sim
+
+# GUI apps on the host's X server (X11 or XWayland), GPU via /dev/dri.
+x-gui: &gui
+  profiles: [gui]
+  devices:
+    - /dev/dri:/dev/dri
+  volumes:
+    - /tmp/.X11-unix:/tmp/.X11-unix:ro
+    - ${XAUTHORITY:-/dev/null}:/tmp/.host.xauth:ro
+    - ./config:/config:ro
+
+services:
+  sim:
+    build:
+      context: .
+      dockerfile: docker/sim.Dockerfile
+    image: spot-sim/sim:latest
+    environment:
+      <<: [*ros-env, *gz-env]
+      SPOT_SIM_CERTS_DIR: /certs
+    volumes:
+      - *certs
+    command: >
+      ros2 launch spot_sim_bringup sim.launch.py
+      world:=${WORLD:-empty} rtf:=${RTF:-1.0}
+    healthcheck:
+      # Healthy once the Spot API port accepts connections.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/443"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 5s
+
+  driver:
+    build:
+      context: .
+      dockerfile: docker/driver.Dockerfile
+    image: spot-sim/driver:latest
+    depends_on:
+      sim:
+        condition: service_healthy
+    environment:
+      <<: *ros-env
+      SPOT_IP: sim
+      SPOT_CERTIFICATE: /certs/ca.crt
+    volumes:
+      - *certs
+      - ./config:/config:ro
+    command: >
+      ros2 launch spot_driver spot_driver.launch.py
+      config_file:=/config/driver.yaml
+      spot_name:=${SPOT_NAME:-spot}
+      use_sim_time:=${USE_SIM_TIME:-true}
+      launch_image_publishers:=${IMAGES:-false}
+
+  gz-gui:
+    <<: *gui
+    image: spot-sim/sim:latest
+    depends_on:
+      sim:
+        condition: service_healthy
+    environment:
+      <<: [*ros-env, *gz-env]
+      DISPLAY: ${DISPLAY:-:0}
+    command: with-x11 gz sim -g
+
+  rviz:
+    <<: *gui
+    image: spot-sim/driver:latest
+    depends_on:
+      driver:
+        condition: service_started
+    environment:
+      <<: *ros-env
+      DISPLAY: ${DISPLAY:-:0}
+    command: >
+      with-x11 ros2 launch /config/rviz.launch.py
+      spot_name:=${SPOT_NAME:-spot} use_sim_time:=${USE_SIM_TIME:-true}
+
+  e2e:
+    profiles: [test]
+    image: spot-sim/driver:latest
+    depends_on:
+      driver:
+        condition: service_started
+    environment:
+      <<: *ros-env
+      SPOT_NAME: ${SPOT_NAME:-spot}
+      USE_SIM_TIME: ${USE_SIM_TIME:-true}
+    volumes:
+      - ./tests:/tests:ro
+    working_dir: /tests
+    command: python3 -m pytest -v -p no:cacheprovider /tests/e2e
