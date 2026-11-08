@@ -193,18 +193,18 @@ def test_point_clouds_put_the_ground_at_zero(ros: RosHarness) -> None:
 
 
 def gripper_blocked_fraction(image: Image) -> float:
-    """Share of the image's central half covered by the dark grey gripper."""
+    """Share of the image covered by the dark grey gripper."""
     pixels = np.frombuffer(bytes(image.data), np.uint8).reshape(image.height, image.step)[:, : image.width * 3]
     pixels = pixels.reshape(image.height, image.width, 3)
-    center = pixels[image.height // 4 : 3 * image.height // 4, image.width // 4 : 3 * image.width // 4]
-    return float(np.mean(np.all(center < 70, axis=2)))
+    return float(np.mean(np.all(pixels < 70, axis=2)))
 
 
 @pytest.mark.skipif(not ARM, reason="needs ARM=true")
 def test_hand_camera_sees_once_the_gripper_opens(ros: RosHarness) -> None:
-    """Like on the robot, the camera in the palm looks through the jaws: closed, they block the view."""
+    """Like on the robot, the camera in the palm looks through the gap in the upper jaw: closed, the jaw hides
+    part of the view."""
     closed = ros.wait_for_message(Image, ros.topic("camera/hand/image"), STARTUP_TIMEOUT_SEC)
-    assert gripper_blocked_fraction(closed) > 0.5
+    assert 0.15 < gripper_blocked_fraction(closed) < 0.6
 
     claim_power_on_and_stand(ros)
     try:
@@ -212,7 +212,7 @@ def test_hand_camera_sees_once_the_gripper_opens(ros: RosHarness) -> None:
         stamp = stamp_sec(ros.wait_for_message(Clock, "/clock", STARTUP_TIMEOUT_SEC).clock)
         after = lambda msg: stamp_sec(msg.header.stamp) > stamp + 0.5  # noqa: E731 - rendered with the jaw open
         opened = ros.wait_for_message(Image, ros.topic("camera/hand/image"), STARTUP_TIMEOUT_SEC, predicate=after)
-        assert gripper_blocked_fraction(opened) < 0.1
+        assert gripper_blocked_fraction(opened) < 0.05
         depth = depth_array(ros.wait_for_message(Image, ros.topic("depth/hand/image"), STARTUP_TIMEOUT_SEC, predicate=after))
         assert np.count_nonzero(depth) > 0.2 * depth.size, "the scene should be in view"
         # The driver's default registration (depth_image_proc, no hole filling)

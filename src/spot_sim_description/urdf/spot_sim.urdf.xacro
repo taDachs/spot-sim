@@ -65,10 +65,11 @@
   </xacro:macro>
 
   <!--
-    The gripper camera, in the palm between the jaws, looking forward: as on
-    the robot, the closed gripper blocks most of the view; open it to see. A
+    The gripper camera, in the palm, looking forward through the gap in the
+    upper jaw: as on the robot, the closed gripper hides part of the view
+    (about a third, around the edges); open it to see everything. A
     visual camera (640x480, ~60 deg, like the robot's at its default
-    resolution) and, 2 cm to its right, a time-of-flight depth sensor
+    resolution) and, 1.5 cm below it, a time-of-flight depth sensor
     (224x171, wider). SpotApiSystem serves hand_color_image, hand_depth and
     hand_depth_in_hand_color_frame from them.
   -->
@@ -88,7 +89,7 @@
     </gazebo>
     <gazebo reference="arm_link_wr1">
       <sensor name="hand_depth" type="depth_camera">
-        <pose>${x} -0.02 ${z} 0 0 0</pose>
+        <pose>${x} 0 ${z - 0.015} 0 0 0</pose>
         <topic>spot_sim/depth/hand/image</topic>
         <update_rate>$(arg camera_rate)</update_rate>
         <always_on>true</always_on>
@@ -103,7 +104,7 @@
 
   <xacro:if value="$(arg cameras)">
     <xacro:if value="$(arg arm)">
-      <xacro:hand_camera x="0.145" z="-0.015"/>
+      <xacro:hand_camera x="0.145" z="0.01"/>
     </xacro:if>
     <xacro:body_camera name="frontleft" x="0.45" y="0.045" z="-0.03" pitch="0.35" yaw="-0.25"/>
     <xacro:body_camera name="frontright" x="0.45" y="-0.045" z="-0.03" pitch="0.35" yaw="0.25"/>
