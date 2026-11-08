@@ -211,9 +211,9 @@ TEST(Commands, RejectsArmAndUnsimulatedCommands) {
   api::RobotCommandRequest arm;
   arm.mutable_command()->mutable_synchronized_command()->mutable_arm_command();
   EXPECT_EQ(commands.Command(arm, LeaseOk(), true, true, 0s).status(), api::RobotCommandResponse::STATUS_UNSUPPORTED);
-  api::RobotCommandRequest selfright;
-  selfright.mutable_command()->mutable_full_body_command()->mutable_selfright_request();
-  EXPECT_EQ(commands.Command(selfright, LeaseOk(), true, true, 0s).status(),
+  api::RobotCommandRequest battery_change;
+  battery_change.mutable_command()->mutable_full_body_command()->mutable_battery_change_pose_request();
+  EXPECT_EQ(commands.Command(battery_change, LeaseOk(), true, true, 0s).status(),
             api::RobotCommandResponse::STATUS_UNSUPPORTED);
   EXPECT_EQ(commands.Command(api::RobotCommandRequest{}, LeaseOk(), true, true, 0s).status(),
             api::RobotCommandResponse::STATUS_INVALID_REQUEST);
@@ -414,4 +414,28 @@ TEST(Commands, UnsetRotationMeansLevel) {
   EXPECT_EQ(locomotion.body_roll, 0.0);
   EXPECT_EQ(locomotion.body_pitch, 0.0);
   EXPECT_EQ(locomotion.body_yaw, 0.0);
+}
+
+TEST(Commands, SelfRightEndsSitting) {
+  Powered robot;
+  api::RobotCommandRequest selfright;
+  selfright.mutable_command()->mutable_full_body_command()->mutable_selfright_request();
+  EXPECT_EQ(robot.commands.Command(selfright, LeaseOk(), /*motors_on=*/false, true, 0s).status(),
+            api::RobotCommandResponse::STATUS_NOT_POWERED_ON);
+
+  robot.commands.Command(Stand(), LeaseOk(), true, true, 0s);
+  robot.BaseReaches(LocomotionState::kStanding);
+  const auto response = robot.commands.Command(selfright, LeaseOk(), true, true, 0s);
+  ASSERT_EQ(response.status(), api::RobotCommandResponse::STATUS_OK);
+  EXPECT_EQ(robot.commands.Locomotion(true).mode, LocomotionMode::kSit);
+  const auto feedback = [&] {
+    return robot.commands.Feedback(FeedbackFor(response.robot_command_id()), robot.status)
+        .feedback()
+        .full_body_feedback()
+        .selfright_feedback()
+        .status();
+  };
+  EXPECT_EQ(feedback(), api::SelfRightCommand::Feedback::STATUS_IN_PROGRESS);
+  robot.BaseReaches(LocomotionState::kSitting);
+  EXPECT_EQ(feedback(), api::SelfRightCommand::Feedback::STATUS_COMPLETED);
 }

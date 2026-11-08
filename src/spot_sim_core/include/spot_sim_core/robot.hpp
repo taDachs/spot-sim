@@ -16,6 +16,7 @@
 #include "spot_sim_core/robot_state.hpp"
 #include "spot_sim_core/time.hpp"
 #include "spot_sim_core/time_sync.hpp"
+#include "spot_sim_core/world_objects.hpp"
 
 namespace spot_sim {
 
@@ -79,6 +80,9 @@ class Robot {
   /// Body cameras (registered and fed by the simulation).
   BodyCameras& cameras() { return cameras_; }
 
+  /// World objects added by clients.
+  WorldObjects& world_objects() { return world_objects_; }
+
  private:
   RobotConfig config_;
   std::atomic<int64_t> now_ns_{0};
@@ -88,6 +92,7 @@ class Robot {
   Firmware firmware_;
   TimeSyncService time_sync_;
   BodyCameras cameras_;
+  WorldObjects world_objects_;
 };
 
 }  // namespace spot_sim

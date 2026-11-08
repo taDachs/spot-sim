@@ -122,6 +122,30 @@ TEST_F(ApiServerTest, UnimplementedRpcsFailFast) {
   EXPECT_EQ(writer->Finish().error_code(), grpc::StatusCode::UNIMPLEMENTED);
 }
 
+TEST_F(ApiServerTest, RecordsUnimplementedCalls) {
+  {
+    // A served service's unimplemented method.
+    auto stub = bosdyn::api::RobotStateService::NewStub(Channel("api.spot.robot"));
+    grpc::ClientContext context;
+    bosdyn::api::RobotLinkModelRequest request;
+    bosdyn::api::RobotLinkModelResponse response;
+    EXPECT_EQ(stub->GetRobotLinkModel(&context, request, &response).error_code(), grpc::StatusCode::UNIMPLEMENTED);
+  }
+  {
+    // A service the simulator does not serve at all.
+    auto stub = bosdyn::api::RobotCommandStreamingService::NewStub(Channel("api.spot.robot"));
+    grpc::ClientContext context;
+    bosdyn::api::JointControlStreamResponse response;
+    auto writer = stub->JointControlStream(&context, &response);
+    writer->WritesDone();
+    EXPECT_EQ(writer->Finish().error_code(), grpc::StatusCode::UNIMPLEMENTED);
+  }
+  const auto methods = server_->UnimplementedMethods();
+  EXPECT_TRUE(methods.count("/bosdyn.api.RobotStateService/GetRobotLinkModel"));
+  EXPECT_TRUE(methods.count("/bosdyn.api.RobotCommandStreamingService/JointControlStream"));
+  EXPECT_FALSE(methods.count("/bosdyn.api.RobotStateService/GetRobotState"));
+}
+
 TEST_F(ApiServerTest, ServesRobotState) {
   auto stub = bosdyn::api::RobotStateService::NewStub(Channel("api.spot.robot"));
   grpc::ClientContext context;

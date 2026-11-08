@@ -72,6 +72,9 @@ class SpotApiSystem : public gz::sim::System,
       spot_sim::ServerConfig server_config;
       server_config.address = "0.0.0.0:" + std::to_string(port);
       server_config.tls = spot_sim::TlsConfig::FromDirectory(certs_dir);
+      if (const char* report_dir = std::getenv("SPOT_SIM_REPORT_DIR")) {
+        server_config.unimplemented_report_file = std::string(report_dir) + "/unimplemented_api_calls.txt";
+      }
       server_ = std::make_unique<spot_sim::SpotApiServer>(*robot_, server_config);
       gzmsg << "[SpotApiSystem] Spot API for '" << robot_config.nickname << "' (model '" << model_name_
             << "') listening on port " << server_->port() << " (certificates from " << certs_dir << ")\n";

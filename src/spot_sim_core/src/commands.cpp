@@ -118,6 +118,16 @@ api::RobotCommandResponse CommandSystem::Command(const api::RobotCommandRequest&
       response.set_status(api::RobotCommandResponse::STATUS_OK);
       return response;
     }
+    if (full_body.has_selfright_request()) {
+      // The simulated robot never falls over; self-righting ends lying down,
+      // i.e. sitting.
+      if (!motors_on) {
+        return reject(api::RobotCommandResponse::STATUS_NOT_POWERED_ON, "motors are off");
+      }
+      auto accepted = accept(Kind::kSelfRight, LocomotionMode::kSit);
+      SetPosture({});
+      return accepted;
+    }
     return reject(api::RobotCommandResponse::STATUS_UNSUPPORTED, "full body command not simulated");
   }
 
@@ -272,6 +282,14 @@ api::RobotCommandFeedbackResponse CommandSystem::Feedback(const api::RobotComman
       auto* full_body = feedback->mutable_full_body_feedback();
       full_body->set_status(processing);
       full_body->mutable_stop_feedback();
+      break;
+    }
+    case Kind::kSelfRight: {
+      auto* full_body = feedback->mutable_full_body_feedback();
+      full_body->set_status(processing);
+      full_body->mutable_selfright_feedback()->set_status(Reached(record, status, LocomotionState::kSitting)
+                                                             ? api::SelfRightCommand::Feedback::STATUS_COMPLETED
+                                                             : api::SelfRightCommand::Feedback::STATUS_IN_PROGRESS);
       break;
     }
     case Kind::kSafePowerOff: {

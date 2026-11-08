@@ -5,13 +5,20 @@
 #include <sstream>
 #include <stdexcept>
 
+#include <grpcpp/generic/async_generic_service.h>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/security/server_credentials.h>
+#include <grpcpp/support/server_interceptor.h>
+
+#include <iostream>
 
 #include <bosdyn/api/auth_service.grpc.pb.h>
 #include <bosdyn/api/directory_service.grpc.pb.h>
 #include <bosdyn/api/estop_service.grpc.pb.h>
+#include <bosdyn/api/docking/docking_service.grpc.pb.h>
+#include <bosdyn/api/graph_nav/graph_nav_service.grpc.pb.h>
 #include <bosdyn/api/image_service.grpc.pb.h>
+#include <bosdyn/api/spot/inverse_kinematics_service.grpc.pb.h>
 #include <bosdyn/api/lease_service.grpc.pb.h>
 #include <bosdyn/api/license_service.grpc.pb.h>
 #include <bosdyn/api/power_service.grpc.pb.h>
@@ -375,7 +382,118 @@ class WorldObjectServiceImpl final : public api::WorldObjectService::Service {
 
   grpc::Status ListWorldObjects(grpc::ServerContext*, const api::ListWorldObjectRequest* request,
                                 api::ListWorldObjectResponse* response) override {
-    return Handle(robot_, request, response, [] {});
+    return Handle(robot_, request, response,
+                  [&] { *response = robot_.world_objects().List(*request, robot_.Now()); });
+  }
+
+  grpc::Status MutateWorldObjects(grpc::ServerContext*, const api::MutateWorldObjectRequest* request,
+                                  api::MutateWorldObjectResponse* response) override {
+    return Handle(robot_, request, response,
+                  [&] { *response = robot_.world_objects().Mutate(*request, robot_.Now()); });
+  }
+
+ private:
+  Robot& robot_;
+};
+
+/// The robot has no arm, so no inverse kinematics request has a solution.
+class InverseKinematicsServiceImpl final : public api::spot::InverseKinematicsService::Service {
+ public:
+  explicit InverseKinematicsServiceImpl(Robot& robot) : robot_(robot) {}
+
+  grpc::Status InverseKinematics(grpc::ServerContext*, const api::spot::InverseKinematicsRequest* request,
+                                 api::spot::InverseKinematicsResponse* response) override {
+    return Handle(robot_, request, response, [&] {
+      response->set_status(api::spot::InverseKinematicsResponse::STATUS_NO_SOLUTION_FOUND);
+      *response->mutable_robot_configuration() = robot_.State().kinematic_state();
+    });
+  }
+
+ private:
+  Robot& robot_;
+};
+
+/// No docking station exists in the simulated world: the robot is undocked,
+/// docking finds no dock and undocking finds the robot not docked.
+class DockingServiceImpl final : public api::docking::DockingService::Service {
+ public:
+  explicit DockingServiceImpl(Robot& robot) : robot_(robot) {}
+
+  grpc::Status DockingCommand(grpc::ServerContext*, const api::docking::DockingCommandRequest* request,
+                              api::docking::DockingCommandResponse* response) override {
+    return Handle(robot_, request, response, [&] {
+      const auto lease =
+          robot_.WithFirmware([&](Firmware& fw) { return fw.lease.Use(request->lease(), Robot::WallNow()); });
+      *response->mutable_lease_use_result() = lease;
+      if (lease.status() != api::LeaseUseResult::STATUS_OK) {
+        response->set_status(api::docking::DockingCommandResponse::STATUS_ERROR_LEASE);
+      } else if (request->prep_pose_behavior() == api::docking::PREP_POSE_UNDOCK) {
+        response->set_status(api::docking::DockingCommandResponse::STATUS_ERROR_NOT_DOCKED);
+      } else {
+        response->set_status(api::docking::DockingCommandResponse::STATUS_ERROR_DOCK_NOT_FOUND);
+      }
+    });
+  }
+
+  grpc::Status DockingCommandFeedback(grpc::ServerContext*, const api::docking::DockingCommandFeedbackRequest* request,
+                                      api::docking::DockingCommandFeedbackResponse* response) override {
+    // No docking command is ever accepted.
+    return Handle(robot_, request, response, [&] {
+      response->set_status(api::docking::DockingCommandFeedbackResponse::STATUS_OLD_DOCKING_COMMAND);
+    });
+  }
+
+  grpc::Status GetDockingConfig(grpc::ServerContext*, const api::docking::GetDockingConfigRequest* request,
+                                api::docking::GetDockingConfigResponse* response) override {
+    return Handle(robot_, request, response, [&] {
+      auto* range = response->add_dock_configs();
+      range->set_id_start(520);
+      range->set_id_end(529);
+      range->set_type(api::docking::DOCK_TYPE_SPOT_DOCK);
+    });
+  }
+
+  grpc::Status GetDockingState(grpc::ServerContext*, const api::docking::GetDockingStateRequest* request,
+                               api::docking::GetDockingStateResponse* response) override {
+    return Handle(robot_, request, response, [&] {
+      response->mutable_dock_state()->set_status(api::docking::DockState::DOCK_STATUS_UNDOCKED);
+      response->mutable_dock_state()->set_power_status(api::docking::DockState::LINK_STATUS_UNKNOWN);
+    });
+  }
+
+ private:
+  Robot& robot_;
+};
+
+/// GraphNav without maps: the graph is empty and the robot is not localized.
+/// Recording, uploading and navigating stay unimplemented.
+class GraphNavServiceImpl final : public api::graph_nav::GraphNavService::Service {
+ public:
+  explicit GraphNavServiceImpl(Robot& robot) : robot_(robot) {}
+
+  grpc::Status GetLocalizationState(grpc::ServerContext*, const api::graph_nav::GetLocalizationStateRequest* request,
+                                    api::graph_nav::GetLocalizationStateResponse* response) override {
+    return Handle(robot_, request, response, [&] {
+      response->mutable_localization();
+      *response->mutable_robot_kinematics() = robot_.State().kinematic_state();
+    });
+  }
+
+  grpc::Status ClearGraph(grpc::ServerContext*, const api::graph_nav::ClearGraphRequest* request,
+                          api::graph_nav::ClearGraphResponse* response) override {
+    return Handle(robot_, request, response, [&] {
+      const auto lease =
+          robot_.WithFirmware([&](Firmware& fw) { return fw.lease.Use(request->lease(), Robot::WallNow()); });
+      *response->mutable_lease_use_result() = lease;
+      if (lease.status() == api::LeaseUseResult::STATUS_OK) {
+        response->set_status(api::graph_nav::ClearGraphResponse::STATUS_OK);
+      }
+    });
+  }
+
+  grpc::Status DownloadGraph(grpc::ServerContext*, const api::graph_nav::DownloadGraphRequest* request,
+                             api::graph_nav::DownloadGraphResponse* response) override {
+    return Handle(robot_, request, response, [&] { response->mutable_graph(); });
   }
 
  private:
@@ -411,7 +529,78 @@ class ImageServiceImpl final : public api::ImageService::Service {
   Robot& robot_;
 };
 
+/// Reports calls to implemented services' unimplemented methods (the
+/// generated base classes answer those with UNIMPLEMENTED).
+class UnimplementedInterceptor final : public grpc::experimental::Interceptor {
+ public:
+  UnimplementedInterceptor(grpc::experimental::ServerRpcInfo* info, std::shared_ptr<UnimplementedCalls> calls)
+      : method_(info->method()), calls_(std::move(calls)) {}
+
+  void Intercept(grpc::experimental::InterceptorBatchMethods* methods) override {
+    if (methods->QueryInterceptionHookPoint(grpc::experimental::InterceptionHookPoints::PRE_SEND_STATUS) &&
+        methods->GetSendStatus().error_code() == grpc::StatusCode::UNIMPLEMENTED) {
+      calls_->Report(method_);
+    }
+    methods->Proceed();
+  }
+
+ private:
+  std::string method_;
+  std::shared_ptr<UnimplementedCalls> calls_;
+};
+
+class UnimplementedInterceptorFactory final : public grpc::experimental::ServerInterceptorFactoryInterface {
+ public:
+  explicit UnimplementedInterceptorFactory(std::shared_ptr<UnimplementedCalls> calls) : calls_(std::move(calls)) {}
+  grpc::experimental::Interceptor* CreateServerInterceptor(grpc::experimental::ServerRpcInfo* info) override {
+    return new UnimplementedInterceptor(info, calls_);
+  }
+
+ private:
+  std::shared_ptr<UnimplementedCalls> calls_;
+};
+
+/// Answers every service the simulator does not implement at all.
+class UnknownServices final : public grpc::CallbackGenericService {
+ public:
+  explicit UnknownServices(std::shared_ptr<UnimplementedCalls> calls) : calls_(std::move(calls)) {}
+
+  grpc::ServerGenericBidiReactor* CreateReactor(grpc::GenericCallbackServerContext* context) override {
+    calls_->Report(context->method());
+    class Reactor final : public grpc::ServerGenericBidiReactor {
+     public:
+      Reactor() { Finish(grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "not simulated")); }
+      void OnDone() override { delete this; }
+    };
+    return new Reactor;
+  }
+
+ private:
+  std::shared_ptr<UnimplementedCalls> calls_;
+};
+
 }  // namespace
+
+UnimplementedCalls::UnimplementedCalls(std::string report_file) : report_file_(std::move(report_file)) {
+  if (!report_file_.empty()) {
+    std::ofstream(report_file_, std::ios::trunc);
+  }
+}
+
+void UnimplementedCalls::Report(const std::string& method) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (methods_.insert(method).second) {
+    std::cerr << "[api] not simulated: " << method << " (answered UNIMPLEMENTED; logged once)" << std::endl;
+    if (!report_file_.empty()) {
+      std::ofstream(report_file_, std::ios::app) << method << "\n";
+    }
+  }
+}
+
+std::set<std::string> UnimplementedCalls::Methods() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return methods_;
+}
 
 TlsConfig TlsConfig::FromDirectory(const std::string& directory) {
   TlsConfig tls;
@@ -430,7 +619,8 @@ TlsConfig TlsConfig::FromDirectory(const std::string& directory) {
   return tls;
 }
 
-SpotApiServer::SpotApiServer(Robot& robot, const ServerConfig& config) {
+SpotApiServer::SpotApiServer(Robot& robot, const ServerConfig& config)
+    : unimplemented_(std::make_shared<UnimplementedCalls>(config.unimplemented_report_file)) {
   grpc::SslServerCredentialsOptions ssl_options;
   for (const auto& cert : config.tls.certificate_pems) {
     ssl_options.pem_key_cert_pairs.push_back({config.tls.private_key_pem, cert});
@@ -448,12 +638,20 @@ SpotApiServer::SpotApiServer(Robot& robot, const ServerConfig& config) {
   services_.push_back(std::make_unique<RobotCommandServiceImpl>(robot));
   services_.push_back(std::make_unique<WorldObjectServiceImpl>(robot));
   services_.push_back(std::make_unique<ImageServiceImpl>(robot));
+  services_.push_back(std::make_unique<InverseKinematicsServiceImpl>(robot));
+  services_.push_back(std::make_unique<DockingServiceImpl>(robot));
+  services_.push_back(std::make_unique<GraphNavServiceImpl>(robot));
 
   grpc::ServerBuilder builder;
   builder.AddListeningPort(config.address, grpc::SslServerCredentials(ssl_options), &port_);
   for (auto& service : services_) {
     builder.RegisterService(service.get());
   }
+  unknown_services_ = std::make_unique<UnknownServices>(unimplemented_);
+  builder.RegisterCallbackGenericService(unknown_services_.get());
+  std::vector<std::unique_ptr<grpc::experimental::ServerInterceptorFactoryInterface>> interceptors;
+  interceptors.push_back(std::make_unique<UnimplementedInterceptorFactory>(unimplemented_));
+  builder.experimental().SetInterceptorCreators(std::move(interceptors));
   server_ = builder.BuildAndStart();
   if (!server_) {
     throw std::runtime_error("failed to start Spot API gRPC server on " + config.address);

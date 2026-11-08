@@ -93,3 +93,8 @@ def ros() -> typing.Iterator[RosHarness]:
     finally:
         harness.node.destroy_node()
         rclpy.shutdown()
+
+
+def pytest_collection_modifyitems(items) -> None:
+    # The quiet-driver checks review everything the suite did: run them last.
+    items.sort(key=lambda item: item.fspath.basename == "test_quiet_driver.py")

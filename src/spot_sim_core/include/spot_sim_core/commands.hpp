@@ -32,8 +32,8 @@ struct VelocityLimits {
 /// base's LocomotionStatus.
 ///
 /// Supported so far: mobility stand / sit / stop / se2_velocity (with
-/// MobilityParams body_control posture and velocity limits), full-body stop
-/// and safe power off. Also implements the robot-side behaviors that sequence
+/// MobilityParams body_control posture and velocity limits), full-body stop,
+/// safe power off and self-right. Also implements the robot-side behaviors that sequence
 /// locomotion and power: safe power off (sit, then cut) and the
 /// SETTLE_THEN_CUT E-Stop (sit, then cut, or cut after a timeout).
 ///
@@ -62,7 +62,7 @@ class CommandSystem {
   LocomotionCommand Locomotion(bool motors_on) const;
 
  private:
-  enum class Kind { kStand, kSit, kMobilityStop, kVelocity, kFullBodyStop, kSafePowerOff };
+  enum class Kind { kStand, kSit, kMobilityStop, kVelocity, kFullBodyStop, kSafePowerOff, kSelfRight };
 
   struct Record {
     Kind kind;

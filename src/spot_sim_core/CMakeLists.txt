@@ -24,7 +24,8 @@ add_library(${PROJECT_NAME} SHARED
   src/robot.cpp
   src/robot_state.cpp
   src/stance.cpp
-  src/time_sync.cpp)
+  src/time_sync.cpp
+  src/world_objects.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
   "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>")
@@ -51,7 +52,8 @@ if(BUILD_TESTING)
     test/test_power.cpp
     test/test_robot_state.cpp
     test/test_stance.cpp
-    test/test_time_sync.cpp)
+    test/test_time_sync.cpp
+    test/test_world_objects.cpp)
   target_link_libraries(${PROJECT_NAME}_test ${PROJECT_NAME} JPEG::JPEG)
 endif()
 

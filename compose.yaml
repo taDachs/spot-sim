@@ -47,8 +47,11 @@ services:
     environment:
       <<: [*ros-env, *gz-env]
       SPOT_SIM_CERTS_DIR: /certs
+      # Unimplemented Spot API calls are listed here (checked by the e2e tests).
+      SPOT_SIM_REPORT_DIR: /reports
     volumes:
       - *certs
+      - reports:/reports
     # GPU for rendering the body cameras (IMAGES=true).
     devices:
       - /dev/dri:/dev/dri
@@ -123,5 +126,10 @@ services:
       IMAGES: ${IMAGES:-false}
     volumes:
       - ./tests:/tests:ro
+      - reports:/reports:ro
     working_dir: /tests
     command: python3 -m pytest -v -p no:cacheprovider /tests/e2e
+
+volumes:
+  # Written by the sim, read by the e2e tests.
+  reports:
