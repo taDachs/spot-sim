@@ -1,11 +1,15 @@
 <?xml version="1.0"?>
 <!--
   Simulated Spot: the spot_description model (legs only, no arm) plus the
-  locomotion base plugin. Converted to SDF by spot_sim_bringup at launch.
+  locomotion base plugin and, optionally, the five body cameras. Converted to
+  SDF by spot_sim_bringup at launch.
 -->
 <robot name="spot" xmlns:xacro="http://www.ros.org/wiki/xacro">
   <!-- Plugin implementing locomotion; swap for another base (e.g. an RL policy). -->
   <xacro:arg name="base_plugin" default="KinematicBaseSystem"/>
+  <!-- Body cameras need rendering (the world's Sensors system); off by default. -->
+  <xacro:arg name="cameras" default="false"/>
+  <xacro:arg name="camera_rate" default="15"/>
 
   <xacro:include filename="$(find spot_description)/urdf/spot_macro.xacro"/>
   <xacro:load_spot arm="false" feet="false" gripperless="false" tf_prefix="" include_transmissions="false"/>
@@ -13,4 +17,35 @@
   <gazebo>
     <plugin filename="$(arg base_plugin)" name="spot_sim_gz::$(arg base_plugin)"/>
   </gazebo>
+
+  <!--
+    One RGB-D camera per Spot body camera, named like the Spot API's cameras
+    (SpotApiSystem serves <name>_fisheye_image, <name>_depth and
+    <name>_depth_in_visual_frame from it). Approximate mounting: the front
+    pair at the nose, cross-eyed and tilted down; one per side; one at the
+    back. Pinhole instead of fisheye optics, 640x480 like the real cameras.
+  -->
+  <xacro:macro name="body_camera" params="name xyz rpy">
+    <gazebo reference="body">
+      <sensor name="${name}" type="rgbd_camera">
+        <pose>${xyz} ${rpy}</pose>
+        <topic>spot_sim/camera/${name}</topic>
+        <update_rate>$(arg camera_rate)</update_rate>
+        <always_on>true</always_on>
+        <camera>
+          <horizontal_fov>1.6</horizontal_fov>
+          <image><width>640</width><height>480</height><format>R8G8B8</format></image>
+          <clip><near>0.02</near><far>10.0</far></clip>
+        </camera>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+
+  <xacro:if value="$(arg cameras)">
+    <xacro:body_camera name="frontleft" xyz="0.45 0.045 -0.03" rpy="0 0.35 -0.25"/>
+    <xacro:body_camera name="frontright" xyz="0.45 -0.045 -0.03" rpy="0 0.35 0.25"/>
+    <xacro:body_camera name="left" xyz="-0.1 0.125 0.0" rpy="0 0.25 ${pi/2}"/>
+    <xacro:body_camera name="right" xyz="-0.1 -0.125 0.0" rpy="0 0.25 ${-pi/2}"/>
+    <xacro:body_camera name="back" xyz="-0.44 0.0 0.0" rpy="0 0.25 ${pi}"/>
+  </xacro:if>
 </robot>

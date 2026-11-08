@@ -9,6 +9,7 @@
 
 #include "spot_sim_core/commands.hpp"
 #include "spot_sim_core/estop.hpp"
+#include "spot_sim_core/images.hpp"
 #include "spot_sim_core/lease.hpp"
 #include "spot_sim_core/locomotion.hpp"
 #include "spot_sim_core/power.hpp"
@@ -75,6 +76,9 @@ class Robot {
 
   TimeSyncService& time_sync() { return time_sync_; }
 
+  /// Body cameras (registered and fed by the simulation).
+  BodyCameras& cameras() { return cameras_; }
+
  private:
   RobotConfig config_;
   std::atomic<int64_t> now_ns_{0};
@@ -83,6 +87,7 @@ class Robot {
   mutable std::mutex firmware_mutex_;
   Firmware firmware_;
   TimeSyncService time_sync_;
+  BodyCameras cameras_;
 };
 
 }  // namespace spot_sim

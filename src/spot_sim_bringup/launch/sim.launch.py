@@ -14,11 +14,26 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+def cameras_enabled(context: LaunchContext) -> bool:
+    return LaunchConfiguration("cameras").perform(context).lower() in ("true", "1")
+
+
+# Rendering for camera sensors (headless EGL in the server).
+SENSORS_PLUGIN = """<plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>"""
+
+
 def render_robot(context: LaunchContext, model_name: str) -> str:
     """Spot as an SDF <model> element: xacro -> URDF -> SDF (gz sdf -p)."""
     xacro_file = os.path.join(get_package_share_directory("spot_sim_description"), "urdf", "spot_sim.urdf.xacro")
     urdf = xacro.process_file(
-        xacro_file, mappings={"base_plugin": LaunchConfiguration("base_plugin").perform(context)}
+        xacro_file,
+        mappings={
+            "base_plugin": LaunchConfiguration("base_plugin").perform(context),
+            "cameras": str(cameras_enabled(context)).lower(),
+            "camera_rate": LaunchConfiguration("camera_rate").perform(context),
+        },
     ).toxml()
     # Gazebo resolves meshes through GZ_SIM_RESOURCE_PATH (set below).
     urdf = urdf.replace("package://", "model://")
@@ -53,6 +68,7 @@ def render_world(context: LaunchContext) -> str:
         username=os.environ.get("BOSDYN_CLIENT_USERNAME", "user"),
         password=os.environ.get("BOSDYN_CLIENT_PASSWORD", "password"),
         model_name=model_name,
+        sensors_plugin=SENSORS_PLUGIN if cameras_enabled(context) else "",
         robot=render_robot(context, model_name),
     )
     with tempfile.NamedTemporaryFile("w", prefix="spot_sim_", suffix=".sdf", delete=False) as f:
@@ -103,6 +119,10 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "base_plugin", default_value="KinematicBaseSystem", description="Locomotion base plugin (spot_sim_gz)"
             ),
+            DeclareLaunchArgument(
+                "cameras", default_value="false", description="Simulate the body cameras (needs rendering)"
+            ),
+            DeclareLaunchArgument("camera_rate", default_value="15", description="Body camera frame rate [Hz]"),
             OpaqueFunction(function=launch_setup),
         ]
     )

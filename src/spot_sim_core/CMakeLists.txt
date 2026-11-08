@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(spot_sim_api_protos REQUIRED)
+find_package(JPEG REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
   src/api_server.cpp
@@ -16,6 +17,7 @@ add_library(${PROJECT_NAME} SHARED
   src/directory.cpp
   src/estop.cpp
   src/gait.cpp
+  src/images.cpp
   src/lease.cpp
   src/leg_kinematics.cpp
   src/power.cpp
@@ -26,7 +28,7 @@ add_library(${PROJECT_NAME} SHARED
 target_include_directories(${PROJECT_NAME} PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
   "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>")
-target_link_libraries(${PROJECT_NAME} PUBLIC spot_sim_api_protos::spot_sim_api_protos)
+target_link_libraries(${PROJECT_NAME} PUBLIC spot_sim_api_protos::spot_sim_api_protos PRIVATE JPEG::JPEG)
 target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic)
 
 install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
@@ -43,13 +45,14 @@ if(BUILD_TESTING)
     test/test_directory.cpp
     test/test_estop.cpp
     test/test_gait.cpp
+    test/test_images.cpp
     test/test_lease.cpp
     test/test_leg_kinematics.cpp
     test/test_power.cpp
     test/test_robot_state.cpp
     test/test_stance.cpp
     test/test_time_sync.cpp)
-  target_link_libraries(${PROJECT_NAME}_test ${PROJECT_NAME})
+  target_link_libraries(${PROJECT_NAME}_test ${PROJECT_NAME} JPEG::JPEG)
 endif()
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)

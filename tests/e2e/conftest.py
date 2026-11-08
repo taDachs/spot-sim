@@ -53,6 +53,14 @@ class RosHarness:
             pytest.fail(f"no matching message on {topic} within {timeout_sec:.0f} s")
         return received[0]
 
+    def wait_until(self, condition: typing.Callable[[], bool], timeout_sec: float, what: str) -> None:
+        """Spin until `condition()` holds."""
+        deadline = time.monotonic() + timeout_sec
+        while not condition():
+            if time.monotonic() > deadline:
+                pytest.fail(f"timed out after {timeout_sec:.0f} s waiting for {what}")
+            self.executor.spin_once(timeout_sec=0.05)
+
     def call(self, srv_type: type, name: str, request: typing.Any, timeout_sec: float = 60.0) -> typing.Any:
         """Call a service of the driver (relative name) and return its response."""
         client = self.node.create_client(srv_type, self.topic(name))

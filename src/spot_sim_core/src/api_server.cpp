@@ -11,6 +11,7 @@
 #include <bosdyn/api/auth_service.grpc.pb.h>
 #include <bosdyn/api/directory_service.grpc.pb.h>
 #include <bosdyn/api/estop_service.grpc.pb.h>
+#include <bosdyn/api/image_service.grpc.pb.h>
 #include <bosdyn/api/lease_service.grpc.pb.h>
 #include <bosdyn/api/license_service.grpc.pb.h>
 #include <bosdyn/api/power_service.grpc.pb.h>
@@ -381,6 +382,35 @@ class WorldObjectServiceImpl final : public api::WorldObjectService::Service {
   Robot& robot_;
 };
 
+class ImageServiceImpl final : public api::ImageService::Service {
+ public:
+  explicit ImageServiceImpl(Robot& robot) : robot_(robot) {}
+
+  grpc::Status ListImageSources(grpc::ServerContext*, const api::ListImageSourcesRequest* request,
+                                api::ListImageSourcesResponse* response) override {
+    return Handle(robot_, request, response, [&] { *response = robot_.cameras().ListImageSources(); });
+  }
+
+  grpc::Status GetImage(grpc::ServerContext*, const api::GetImageRequest* request,
+                        api::GetImageResponse* response) override {
+    return Handle(robot_, request, response, [&] {
+      // Image snapshots carry the robot's world frames; the driver publishes
+      // every other frame in them as a static transform.
+      api::FrameTreeSnapshot tree;
+      const auto state = robot_.State();
+      for (const auto& [child, edge] : state.kinematic_state().transforms_snapshot().child_to_parent_edge_map()) {
+        if (child == "body" || child == "odom" || child == "vision") {
+          (*tree.mutable_child_to_parent_edge_map())[child] = edge;
+        }
+      }
+      *response = robot_.cameras().GetImage(*request, tree);
+    });
+  }
+
+ private:
+  Robot& robot_;
+};
+
 }  // namespace
 
 TlsConfig TlsConfig::FromDirectory(const std::string& directory) {
@@ -417,6 +447,7 @@ SpotApiServer::SpotApiServer(Robot& robot, const ServerConfig& config) {
   services_.push_back(std::make_unique<PowerServiceImpl>(robot));
   services_.push_back(std::make_unique<RobotCommandServiceImpl>(robot));
   services_.push_back(std::make_unique<WorldObjectServiceImpl>(robot));
+  services_.push_back(std::make_unique<ImageServiceImpl>(robot));
 
   grpc::ServerBuilder builder;
   builder.AddListeningPort(config.address, grpc::SslServerCredentials(ssl_options), &port_);

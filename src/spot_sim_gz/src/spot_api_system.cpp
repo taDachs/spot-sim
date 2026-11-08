@@ -2,8 +2,12 @@
 // network: it serves the Spot gRPC API (spot_sim_core), feeds it the
 // simulation clock and the robot's state as Gazebo sees it, and hands the
 // resulting locomotion targets to the base plugin on the robot model.
+// RGB-D camera sensors named after Spot's body cameras (frontleft,
+// frontright, left, right, back) on the body link become image sources.
 
 #include <array>
+#include <set>
+#include <vector>
 #include <chrono>
 #include <cstdlib>
 #include <memory>
@@ -19,12 +23,17 @@
 #include <gz/sim/Util.hh>
 #include <gz/sim/components/Model.hh>
 #include <gz/sim/components/Name.hh>
+#include <gz/sim/components/ParentEntity.hh>
+#include <gz/sim/components/Pose.hh>
+#include <gz/sim/components/RgbdCamera.hh>
+#include <gz/sim/components/Sensor.hh>
 #include <sdf/Element.hh>
 
 #include <spot_sim_core/api_server.hpp>
 #include <spot_sim_core/leg_kinematics.hpp>
 #include <spot_sim_core/robot.hpp>
 
+#include "camera_feed.hpp"
 #include "spot_sim_gz/components.hpp"
 
 namespace spot_sim_gz {
@@ -124,6 +133,30 @@ class SpotApiSystem : public gz::sim::System,
     }
     model_ = model;
     gzmsg << "[SpotApiSystem] found robot model '" << model_name_ << "'\n";
+    FindCameras(ecm);
+  }
+
+  void FindCameras(gz::sim::EntityComponentManager& ecm) {
+    static const std::set<std::string> kBodyCameras = {"frontleft", "frontright", "left", "right", "back"};
+    // Optical frame (z forward, x right, y down) of a sensor looking along +x.
+    const gz::math::Pose3d sensor_T_optical(0.0, 0.0, 0.0, -GZ_PI / 2, 0.0, -GZ_PI / 2);
+    for (const auto entity : ecm.ChildrenByComponents(body_link_, components::Sensor())) {
+      const auto* name = ecm.Component<components::Name>(entity);
+      const auto* camera = ecm.Component<components::RgbdCamera>(entity);
+      const auto* pose = ecm.Component<components::Pose>(entity);
+      if (name == nullptr || camera == nullptr || pose == nullptr || kBodyCameras.count(name->Data()) == 0) {
+        continue;
+      }
+      const std::string topic = camera->Data().Topic();
+      robot_->cameras().AddCamera(name->Data(), ToPose(pose->Data() * sensor_T_optical));
+      auto feed = std::make_unique<CameraFeed>(name->Data(), topic, robot_->cameras());
+      if (!feed->ok()) {
+        gzerr << "[SpotApiSystem] cannot subscribe to camera '" << name->Data() << "' on " << topic << "\n";
+        continue;
+      }
+      gzmsg << "[SpotApiSystem] body camera '" << name->Data() << "' on " << topic << "\n";
+      camera_feeds_.push_back(std::move(feed));
+    }
   }
 
   void ReadSnapshot(const gz::sim::EntityComponentManager& ecm, spot_sim::RobotTime now) {
@@ -196,6 +229,7 @@ class SpotApiSystem : public gz::sim::System,
   std::array<gz::sim::Joint, 12> joints_;
   std::array<gz::sim::Entity, 4> lower_legs_{};
   std::optional<gz::math::Pose3d> world_T_odom_;
+  std::vector<std::unique_ptr<CameraFeed>> camera_feeds_;
   std::optional<gz::math::Pose3d> previous_pose_;
   spot_sim::RobotTime previous_time_{0};
 };

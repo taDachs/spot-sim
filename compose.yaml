@@ -5,7 +5,13 @@
 #   docker compose --profile test run --rm e2e     # end-to-end tests against the running stack
 #   tests/run_time_matrix.sh                       # cmd_vel tests at RTF 0.5 / 1 / 2 and on wall time
 #
-# Knobs (environment or .env): WORLD, RTF, USE_SIM_TIME, IMAGES, SPOT_NAME, ROS_DOMAIN_ID.
+# Knobs (environment or .env):
+#   WORLD=empty|yard     world in src/spot_sim_bringup/worlds (yard: objects around the robot)
+#   RTF=1.0              simulation speed relative to real time
+#   USE_SIM_TIME=true    driver on simulation time (false only at RTF 1)
+#   IMAGES=false         true: render the five body cameras (GPU via /dev/dri) and
+#                        run the driver's image publishers (/spot/camera/*, /spot/depth/*)
+#   SPOT_NAME, ROS_DOMAIN_ID, SPOT_USERNAME, SPOT_PASSWORD
 
 name: spot-sim
 
@@ -43,9 +49,12 @@ services:
       SPOT_SIM_CERTS_DIR: /certs
     volumes:
       - *certs
+    # GPU for rendering the body cameras (IMAGES=true).
+    devices:
+      - /dev/dri:/dev/dri
     command: >
       ros2 launch spot_sim_bringup sim.launch.py
-      world:=${WORLD:-empty} rtf:=${RTF:-1.0}
+      world:=${WORLD:-empty} rtf:=${RTF:-1.0} cameras:=${IMAGES:-false}
     healthcheck:
       # Healthy once the Spot API port accepts connections.
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/443"]
@@ -111,6 +120,7 @@ services:
       SPOT_NAME: ${SPOT_NAME:-spot}
       USE_SIM_TIME: ${USE_SIM_TIME:-true}
       RTF: ${RTF:-1.0}
+      IMAGES: ${IMAGES:-false}
     volumes:
       - ./tests:/tests:ro
     working_dir: /tests

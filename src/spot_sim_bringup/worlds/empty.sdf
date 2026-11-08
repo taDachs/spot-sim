@@ -15,6 +15,7 @@
     <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
     <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
     <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    ${sensors_plugin}
 
     <plugin filename="SpotApiSystem" name="spot_sim_gz::SpotApiSystem">
       <nickname>spot-sim</nickname>

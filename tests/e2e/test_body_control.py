@@ -107,6 +107,7 @@ def test_stand_height(ros: RosHarness) -> None:
 
 
 def test_body_pose_applies_with_next_stand(ros: RosHarness) -> None:
+    heading = yaw(wait_for_odometry(ros, lambda _: True))
     publish_body_pose(ros, height=-0.1, body_pitch=0.25)
     assert_success(ros.trigger("stand"))
     posed = wait_for_odometry(
@@ -114,7 +115,7 @@ def test_body_pose_applies_with_next_stand(ros: RosHarness) -> None:
         lambda msg: abs(pitch(msg) - 0.25) < ANGLE_TOLERANCE
         and abs(msg.pose.pose.position.z - (STAND_HEIGHT - 0.1)) < 0.01,
     )
-    assert abs(posed.pose.pose.orientation.z) < 0.01, "no yaw requested"
+    assert abs(math.remainder(yaw(posed) - heading, 2.0 * math.pi)) < ANGLE_TOLERANCE, "no yaw requested"
     assert_feet_on_ground(ros)
 
     publish_body_pose(ros)
