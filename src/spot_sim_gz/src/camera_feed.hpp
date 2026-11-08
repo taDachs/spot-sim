@@ -46,15 +46,17 @@ class CameraFeed {
     return spot_sim::RobotTime{header.stamp().sec() * 1'000'000'000LL + header.stamp().nsec()};
   }
 
+  static spot_sim::ImageGeometry Geometry(const gz::msgs::Image& msg, const Sensor& sensor) {
+    return spot_sim::ImageGeometry{static_cast<int>(msg.width()), static_cast<int>(msg.height()), sensor.intrinsics};
+  }
+
   void OnVisual(const gz::msgs::Image& msg) {
     if (msg.pixel_format_type() != gz::msgs::PixelFormatType::RGB_INT8) {
       return;
     }
     spot_sim::VisualFrame frame;
     frame.stamp = Stamp(msg.header());
-    frame.width = static_cast<int>(msg.width());
-    frame.height = static_cast<int>(msg.height());
-    frame.intrinsics = visual_.intrinsics;
+    frame.geometry = Geometry(msg, visual_);
     if (mount_pose_) frame.body_T_mount = mount_pose_();
     const std::size_t row = static_cast<std::size_t>(msg.width()) * 3;
     frame.rgb.resize(row * msg.height());
@@ -75,9 +77,7 @@ class CameraFeed {
     }
     spot_sim::DepthFrame frame;
     frame.stamp = Stamp(msg.header());
-    frame.width = static_cast<int>(msg.width());
-    frame.height = static_cast<int>(msg.height());
-    frame.intrinsics = depth_.intrinsics;
+    frame.geometry = Geometry(msg, depth_);
     if (mount_pose_) frame.body_T_mount = mount_pose_();
     frame.depth_mm = spot_sim::DepthToMillimeters(meters.data(), count);
     cameras_.SetDepthFrame(name_, std::move(frame));

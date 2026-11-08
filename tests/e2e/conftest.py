@@ -18,6 +18,16 @@ USE_SIM_TIME = os.environ.get("USE_SIM_TIME", "true").lower() in ("1", "true")
 STARTUP_TIMEOUT_SEC = 120.0
 
 
+def frame(name: str) -> str:
+    """A robot frame's name in the driver's TF tree and message headers."""
+    return f"{SPOT_NAME}/{name}" if SPOT_NAME else name
+
+
+def assert_success(response) -> None:
+    """A driver service response (Trigger and the like) reports success."""
+    assert response.success, response.message
+
+
 class RosHarness:
     def __init__(self) -> None:
         self.node = Node("spot_sim_e2e")

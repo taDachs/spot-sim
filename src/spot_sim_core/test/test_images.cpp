@@ -25,9 +25,7 @@ constexpr int kDepthWidth = 4, kDepthHeight = 3;  // depth sensor
 VisualFrame TestVisual(spot_sim::RobotTime stamp = 7s) {
   VisualFrame frame;
   frame.stamp = stamp;
-  frame.width = kWidth;
-  frame.height = kHeight;
-  frame.intrinsics = {5.0, 5.5, 4.0, 3.0};
+  frame.geometry = {kWidth, kHeight, {5.0, 5.5, 4.0, 3.0}};
   for (int i = 0; i < kWidth * kHeight; ++i) {
     frame.rgb.insert(frame.rgb.end(), {200, 100, 50});
   }
@@ -37,9 +35,7 @@ VisualFrame TestVisual(spot_sim::RobotTime stamp = 7s) {
 DepthFrame TestDepth(spot_sim::RobotTime stamp = 7s) {
   DepthFrame frame;
   frame.stamp = stamp;
-  frame.width = kDepthWidth;
-  frame.height = kDepthHeight;
-  frame.intrinsics = {2.5, 2.5, 2.0, 1.5};
+  frame.geometry = {kDepthWidth, kDepthHeight, {2.5, 2.5, 2.0, 1.5}};
   for (int i = 0; i < kDepthWidth * kDepthHeight; ++i) {
     frame.depth_mm.push_back(static_cast<uint16_t>(1000 + i));
   }
@@ -61,10 +57,8 @@ std::unique_ptr<BodyCameras> Cameras() {
 /// A fronto-parallel plane `distance` in front of a camera.
 DepthFrame Plane(int width, int height, const spot_sim::PinholeIntrinsics& k, double distance) {
   DepthFrame frame;
-  frame.width = width;
-  frame.height = height;
-  frame.intrinsics = k;
-  frame.depth_mm.assign(static_cast<std::size_t>(width) * height, static_cast<uint16_t>(distance * 1000));
+  frame.geometry = {width, height, k};
+  frame.depth_mm.assign(frame.geometry.pixels(), static_cast<uint16_t>(distance * 1000));
   return frame;
 }
 
@@ -216,7 +210,7 @@ TEST(Images, RegisteringToTheSameCameraIsTheIdentity) {
   auto depth = Plane(64, 48, k, 2.0);
   depth.depth_mm[10] = 0;     // a hole stays a hole
   depth.depth_mm[100] = 1500;  // a nearer point stays where it is
-  const auto registered = spot_sim::RegisterDepth(depth, Pose{}, 64, 48, k);
+  const auto registered = spot_sim::RegisterDepth(depth, Pose{}, {64, 48, k});
   EXPECT_EQ(registered.depth_mm, depth.depth_mm);
 }
 
@@ -225,9 +219,9 @@ TEST(Images, RegistrationIntoAnOffsetHigherResolutionCamera) {
   const auto depth_k = spot_sim::PinholeIntrinsics::FromHorizontalFov(424, 240, 1.5);
   const auto visual_k = spot_sim::PinholeIntrinsics::FromHorizontalFov(640, 480, 1.6);
   const Pose visual_T_depth{{0.03, 0.0, 0.0}, Quat{}};
-  const auto registered = spot_sim::RegisterDepth(Plane(424, 240, depth_k, 2.0), visual_T_depth, 640, 480, visual_k);
-  ASSERT_EQ(registered.width, 640);
-  ASSERT_EQ(registered.height, 480);
+  const auto registered = spot_sim::RegisterDepth(Plane(424, 240, depth_k, 2.0), visual_T_depth, {640, 480, visual_k});
+  ASSERT_EQ(registered.geometry.width, 640);
+  ASSERT_EQ(registered.geometry.height, 480);
   // Where the depth sensor sees the wall, the visual image gets 2 m with no gaps.
   int filled = 0, total = 0;
   for (int v = 180; v < 300; ++v) {

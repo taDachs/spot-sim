@@ -33,6 +33,7 @@
 #include "spot_sim_core/directory.hpp"
 #include "spot_sim_core/response_header.hpp"
 #include "spot_sim_core/robot.hpp"
+#include "spot_sim_core/robot_frames.hpp"
 
 namespace spot_sim {
 
@@ -313,11 +314,14 @@ class RobotCommandServiceImpl final : public api::RobotCommandService::Service {
   grpc::Status RobotCommand(grpc::ServerContext*, const api::RobotCommandRequest* request,
                             api::RobotCommandResponse* response) override {
     return Handle(robot_, request, response, [&] {
-      const bool clock_synced = robot_.time_sync().IsSynced(request->clock_identifier());
-      const double odom_yaw = robot_.Snapshot().odom_T_body.rotation.Yaw();
+      CommandContext context;
+      context.clock_synced = robot_.time_sync().IsSynced(request->clock_identifier());
+      context.odom_yaw = robot_.Snapshot().odom_T_body.rotation.Yaw();
       *response = robot_.WithFirmware([&](Firmware& fw) {
-        const auto lease = fw.lease.Use(request->lease(), Robot::WallNow());
-        return fw.commands.Command(*request, lease, fw.power.MotorsOn(), clock_synced, robot_.Now(), odom_yaw);
+        const auto lease = fw.UseLease(request->lease());
+        context.motors_on = fw.power.MotorsOn();
+        context.now = robot_.Now();
+        return fw.commands.Command(*request, lease, context);
       });
     });
   }
@@ -334,7 +338,7 @@ class RobotCommandServiceImpl final : public api::RobotCommandService::Service {
     return Handle(robot_, request, response, [&] {
       *response = robot_.WithFirmware([&](Firmware& fw) {
         api::ClearBehaviorFaultResponse result;
-        *result.mutable_lease_use_result() = fw.lease.Use(request->lease(), Robot::WallNow());
+        *result.mutable_lease_use_result() = fw.UseLease(request->lease());
         // No behavior faults are simulated, so there is never one to clear.
         result.set_status(api::ClearBehaviorFaultResponse::STATUS_NOT_CLEARED);
         return result;
@@ -354,14 +358,13 @@ class PowerServiceImpl final : public api::PowerService::Service {
                             api::PowerCommandResponse* response) override {
     return Handle(robot_, request, response, [&] {
       *response = robot_.WithFirmware([&](Firmware& fw) {
-        const WallTime wall = Robot::WallNow();
-        const auto lease_result = fw.lease.Use(request->lease(), wall);
+        const auto lease_result = fw.UseLease(request->lease());
         if (lease_result.status() != api::LeaseUseResult::STATUS_OK) {
           api::PowerCommandResponse rejected;
           *rejected.mutable_lease_use_result() = lease_result;
           return rejected;
         }
-        auto result = fw.power.Command(*request, fw.estop.StopLevel(wall), robot_.Now());
+        auto result = fw.power.Command(*request, fw.estop.StopLevel(Robot::WallNow()), robot_.Now());
         *result.mutable_lease_use_result() = lease_result;
         return result;
       });
@@ -425,8 +428,7 @@ class DockingServiceImpl final : public api::docking::DockingService::Service {
   grpc::Status DockingCommand(grpc::ServerContext*, const api::docking::DockingCommandRequest* request,
                               api::docking::DockingCommandResponse* response) override {
     return Handle(robot_, request, response, [&] {
-      const auto lease =
-          robot_.WithFirmware([&](Firmware& fw) { return fw.lease.Use(request->lease(), Robot::WallNow()); });
+      const auto lease = robot_.UseLease(request->lease());
       *response->mutable_lease_use_result() = lease;
       if (lease.status() != api::LeaseUseResult::STATUS_OK) {
         response->set_status(api::docking::DockingCommandResponse::STATUS_ERROR_LEASE);
@@ -485,8 +487,7 @@ class GraphNavServiceImpl final : public api::graph_nav::GraphNavService::Servic
   grpc::Status ClearGraph(grpc::ServerContext*, const api::graph_nav::ClearGraphRequest* request,
                           api::graph_nav::ClearGraphResponse* response) override {
     return Handle(robot_, request, response, [&] {
-      const auto lease =
-          robot_.WithFirmware([&](Firmware& fw) { return fw.lease.Use(request->lease(), Robot::WallNow()); });
+      const auto lease = robot_.UseLease(request->lease());
       *response->mutable_lease_use_result() = lease;
       if (lease.status() == api::LeaseUseResult::STATUS_OK) {
         response->set_status(api::graph_nav::ClearGraphResponse::STATUS_OK);
@@ -520,7 +521,7 @@ class ImageServiceImpl final : public api::ImageService::Service {
       api::FrameTreeSnapshot tree;
       const auto state = robot_.State();
       for (const auto& [child, edge] : state.kinematic_state().transforms_snapshot().child_to_parent_edge_map()) {
-        if (child == "body" || child == "odom" || child == "vision") {
+        if (child == kBodyFrame || child == kOdomFrame || child == kVisionFrame) {
           (*tree.mutable_child_to_parent_edge_map())[child] = edge;
         }
       }

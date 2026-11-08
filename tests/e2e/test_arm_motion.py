@@ -25,11 +25,10 @@ from sensor_msgs.msg import JointState
 from spot_msgs.action import RobotCommand
 from tf2_ros import Buffer, TransformListener
 
-from conftest import SPOT_NAME, RosHarness
+from conftest import RosHarness, assert_success, frame
 from driving import (
     MOTION_TIMEOUT_SEC,
     Drive,
-    assert_success,
     claim_power_on_and_stand,
     power_off_and_release,
     twist,
@@ -41,10 +40,6 @@ pytestmark = pytest.mark.skipif(os.environ.get("ARM", "false").lower() not in ("
 POSITION_TOLERANCE = 0.01  # [m]
 ANGLE_TOLERANCE = 0.02  # [rad]
 SIT_HEIGHT = 0.20
-
-
-def frame(name: str) -> str:
-    return f"{SPOT_NAME}/{name}" if SPOT_NAME else name
 
 
 class Tf:

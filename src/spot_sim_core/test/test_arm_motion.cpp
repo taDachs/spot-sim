@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <memory>
 #include <random>
 #include <variant>
 
@@ -22,20 +23,20 @@ using spot_sim::Quat;
 using spot_sim::Vec3;
 
 namespace {
-ArmMotion Create(const api::ArmCommand::Request& request, const ArmContext& context, spot_sim::RobotTime now = 0s,
-                 bool clock_synced = true) {
+std::unique_ptr<ArmMotion> Create(const api::ArmCommand::Request& request, const ArmContext& context,
+                                  spot_sim::RobotTime now = 0s, bool clock_synced = true) {
   auto created = ArmMotion::Create(request, context, now, clock_synced);
-  if (const auto* rejection = std::get_if<ArmMotion::Rejection>(&created)) {
+  if (const auto* rejection = std::get_if<spot_sim::Rejection>(&created)) {
     ADD_FAILURE() << "rejected: " << rejection->message;
     return ArmMotion::Hold(context.joints);
   }
-  return std::get<ArmMotion>(created);
+  return std::move(std::get<std::unique_ptr<ArmMotion>>(created));
 }
 
 api::RobotCommandResponse::Status Rejection(const api::ArmCommand::Request& request, const ArmContext& context,
                                             spot_sim::RobotTime now = 0s, bool clock_synced = true) {
   auto created = ArmMotion::Create(request, context, now, clock_synced);
-  const auto* rejection = std::get_if<ArmMotion::Rejection>(&created);
+  const auto* rejection = std::get_if<spot_sim::Rejection>(&created);
   return rejection ? rejection->status : api::RobotCommandResponse::STATUS_OK;
 }
 
@@ -131,17 +132,17 @@ TEST(ArmMotion, JointMoveFollowsTheTrajectoryTiming) {
   point->mutable_position()->mutable_wr1()->set_value(ready.wr1);
   *point->mutable_time_since_reference() = spot_sim::ToDuration(4s);
 
-  ArmMotion motion = Create(request, context);
-  Simulate(motion, context, 0.0, 2.0);
+  const auto motion = Create(request, context);
+  Simulate(*motion, context, 0.0, 2.0);
   // Halfway in time, halfway in joint space.
   EXPECT_NEAR(context.joints.sh1, (ArmKinematics::Stow().sh1 + ready.sh1) / 2, 0.01);
-  EXPECT_EQ(motion.progress(), ArmMotion::Progress::kInProgress);
-  Simulate(motion, context, 2.0, 4.1);
+  EXPECT_EQ(motion->progress(), ArmMotion::Progress::kInProgress);
+  Simulate(*motion, context, 2.0, 4.1);
   EXPECT_LT(context.joints.MaxDifference(ready), 1e-9);
-  EXPECT_EQ(motion.progress(), ArmMotion::Progress::kComplete);
+  EXPECT_EQ(motion->progress(), ArmMotion::Progress::kComplete);
 
   api::ArmCommand::Feedback feedback;
-  motion.FillFeedback(&feedback);
+  motion->FillFeedback(&feedback);
   EXPECT_EQ(feedback.arm_joint_move_feedback().status(), api::ArmJointMoveCommand::Feedback::STATUS_COMPLETE);
   EXPECT_EQ(feedback.arm_joint_move_feedback().planner_status(),
             api::ArmJointMoveCommand::Feedback::PLANNER_STATUS_SUCCESS);
@@ -153,14 +154,14 @@ TEST(ArmMotion, JointMoveTooFastIsStretchedToTheSpeedLimit) {
   auto* point = request.mutable_arm_joint_move_command()->mutable_trajectory()->add_points();
   point->mutable_position()->mutable_sh0()->set_value(1.0);  // the other joints stay
   *point->mutable_time_since_reference() = spot_sim::ToDuration(100ms);
-  ArmMotion motion = Create(request, context);
-  Simulate(motion, context, 0.0, 0.5);
+  const auto motion = Create(request, context);
+  Simulate(*motion, context, 0.0, 0.5);
   EXPECT_NEAR(context.joints.sh0, 0.5, 0.02);  // 1 rad/s default
-  Simulate(motion, context, 0.5, 1.1);
-  EXPECT_EQ(motion.progress(), ArmMotion::Progress::kComplete);
+  Simulate(*motion, context, 0.5, 1.1);
+  EXPECT_EQ(motion->progress(), ArmMotion::Progress::kComplete);
   EXPECT_DOUBLE_EQ(context.joints.sh1, ArmKinematics::Stow().sh1);
   api::ArmCommand::Feedback feedback;
-  motion.FillFeedback(&feedback);
+  motion->FillFeedback(&feedback);
   EXPECT_EQ(feedback.arm_joint_move_feedback().planner_status(),
             api::ArmJointMoveCommand::Feedback::PLANNER_STATUS_MODIFIED);
 }
@@ -169,14 +170,14 @@ TEST(ArmMotion, JointMoveTooFastIsStretchedToTheSpeedLimit) {
 
 TEST(ArmMotion, CartesianMoveInBodyReachesThePose) {
   ArmContext context{ArmKinematics::Ready(), Pose{}};
-  ArmMotion motion = Create(Cartesian("body", kInFront, 2.0), context);
-  Simulate(motion, context, 0.0, 1.0);
-  EXPECT_EQ(motion.progress(), ArmMotion::Progress::kInProgress);
-  Simulate(motion, context, 1.0, 2.1);
-  EXPECT_EQ(motion.progress(), ArmMotion::Progress::kComplete);
+  const auto motion = Create(Cartesian("body", kInFront, 2.0), context);
+  Simulate(*motion, context, 0.0, 1.0);
+  EXPECT_EQ(motion->progress(), ArmMotion::Progress::kInProgress);
+  Simulate(*motion, context, 1.0, 2.1);
+  EXPECT_EQ(motion->progress(), ArmMotion::Progress::kComplete);
   ExpectPoseNear(ArmKinematics::BodyTHand(context.joints), kInFront);
   api::ArmCommand::Feedback feedback;
-  motion.FillFeedback(&feedback);
+  motion->FillFeedback(&feedback);
   EXPECT_EQ(feedback.arm_cartesian_feedback().status(), api::ArmCartesianCommand::Feedback::STATUS_TRAJECTORY_COMPLETE);
   EXPECT_LT(feedback.arm_cartesian_feedback().measured_pos_distance_to_goal(), 1e-4);
 }
@@ -185,23 +186,23 @@ TEST(ArmMotion, CartesianMoveInOdomHoldsTheHandInTheWorld) {
   const Pose odom_T_body{Vec3{1.0, 2.0, 0.5}, Quat::FromYaw(0.5)};
   ArmContext context{ArmKinematics::Ready(), odom_T_body};
   const Pose odom_T_hand = odom_T_body * kInFront;
-  ArmMotion motion = Create(Cartesian("odom", odom_T_hand), context);
-  Simulate(motion, context, 0.0, 3.0);
-  ASSERT_EQ(motion.progress(), ArmMotion::Progress::kComplete);
+  const auto motion = Create(Cartesian("odom", odom_T_hand), context);
+  Simulate(*motion, context, 0.0, 3.0);
+  ASSERT_EQ(motion->progress(), ArmMotion::Progress::kComplete);
 
   // The body walks 10 cm forward and turns; the hand stays put in odom.
   context.odom_T_body = odom_T_body * Pose{Vec3{0.1, 0.0, 0.0}, Quat::FromYaw(0.1)};
-  Simulate(motion, context, 3.0, 3.1);
+  Simulate(*motion, context, 3.0, 3.1);
   ExpectPoseNear(context.odom_T_body * ArmKinematics::BodyTHand(context.joints), odom_T_hand);
 }
 
 TEST(ArmMotion, UnreachablePoseStalls) {
   ArmContext context{ArmKinematics::Ready(), Pose{}};
-  ArmMotion motion = Create(Cartesian("body", Pose{Vec3{2.0, 0.0, 0.3}, Quat{}}), context);
-  Simulate(motion, context, 0.0, 5.0);
-  EXPECT_EQ(motion.progress(), ArmMotion::Progress::kStalled);
+  const auto motion = Create(Cartesian("body", Pose{Vec3{2.0, 0.0, 0.3}, Quat{}}), context);
+  Simulate(*motion, context, 0.0, 5.0);
+  EXPECT_EQ(motion->progress(), ArmMotion::Progress::kStalled);
   api::ArmCommand::Feedback feedback;
-  motion.FillFeedback(&feedback);
+  motion->FillFeedback(&feedback);
   EXPECT_EQ(feedback.arm_cartesian_feedback().status(), api::ArmCartesianCommand::Feedback::STATUS_TRAJECTORY_STALLED);
 }
 
@@ -224,13 +225,13 @@ TEST(ArmMotion, CylindricalVelocityMovesTheHandOutwardUntilEndTime) {
   *velocity->mutable_end_time() = spot_sim::ToTimestamp(1s);
   const Pose start = ArmKinematics::BodyTHand(context.joints);
 
-  ArmMotion motion = Create(request, context);
-  Simulate(motion, context, 0.0, 2.0);
+  const auto motion = Create(request, context);
+  Simulate(*motion, context, 0.0, 2.0);
   const Pose end = ArmKinematics::BodyTHand(context.joints);
   EXPECT_NEAR(end.position.x - start.position.x, -0.1, 1e-3);  // straight ahead: r is x
   EXPECT_NEAR(end.position.z - start.position.z, 0.05, 1e-3);
   EXPECT_NEAR(end.rotation.AngleTo(start.rotation), 0.0, 1e-6);
-  EXPECT_EQ(motion.progress(), ArmMotion::Progress::kTimedOut);
+  EXPECT_EQ(motion->progress(), ArmMotion::Progress::kTimedOut);
 }
 
 TEST(ArmMotion, CartesianVelocityInOdom) {
@@ -242,8 +243,8 @@ TEST(ArmMotion, CartesianVelocityInOdom) {
   velocity->mutable_cartesian_velocity()->mutable_velocity_in_frame_name()->set_y(-0.1);
   *velocity->mutable_end_time() = spot_sim::ToTimestamp(1s);
   const Vec3 start = ArmKinematics::BodyTHand(context.joints).position;
-  ArmMotion motion = Create(request, context);
-  Simulate(motion, context, 0.0, 1.0);
+  const auto motion = Create(request, context);
+  Simulate(*motion, context, 0.0, 1.0);
   EXPECT_NEAR(ArmKinematics::BodyTHand(context.joints).position.x - start.x, -0.1, 1e-3);
 }
 
@@ -268,15 +269,15 @@ TEST(ArmMotion, GazePointsTheHandAtTheTarget) {
   *gaze->mutable_target_trajectory_in_frame1()->add_points()->mutable_point() = spot_sim::ToProto(target);
   const Vec3 hand_before = ArmKinematics::BodyTHand(context.joints).position;
 
-  ArmMotion motion = Create(request, context);
-  Simulate(motion, context, 0.0, 0.2);
-  ASSERT_EQ(motion.progress(), ArmMotion::Progress::kComplete);
+  const auto motion = Create(request, context);
+  Simulate(*motion, context, 0.0, 0.2);
+  ASSERT_EQ(motion->progress(), ArmMotion::Progress::kComplete);
   const Pose hand = ArmKinematics::BodyTHand(context.joints);
   EXPECT_NEAR((hand.position - hand_before).Norm(), 0.0, 1e-4);  // the hand stays where it was
   EXPECT_NEAR(hand.rotation.XAxis().Dot((target - hand.position).Normalized()), 1.0, 1e-6);
   EXPECT_NEAR(hand.rotation.YAxis().z, 0.0, 1e-6);  // no roll
   api::ArmCommand::Feedback feedback;
-  motion.FillFeedback(&feedback);
+  motion->FillFeedback(&feedback);
   EXPECT_TRUE(feedback.arm_gaze_feedback().gazing_at_target());
 }
 
@@ -303,11 +304,11 @@ TEST(ArmMotion, CommandSystemRunsCartesianMovesAlongsideWalking) {
   velocity->set_se2_frame_name("body");
   velocity->mutable_velocity()->mutable_linear()->set_x(0.5);
   *velocity->mutable_end_time() = spot_sim::ToTimestamp(10s);
-  ASSERT_EQ(commands.Command(walk, lease, true, true, 0s).status(), api::RobotCommandResponse::STATUS_OK);
+  ASSERT_EQ(commands.Command(walk, lease, {true, true, 0s}).status(), api::RobotCommandResponse::STATUS_OK);
 
   api::RobotCommandRequest reach;
   *reach.mutable_command()->mutable_synchronized_command()->mutable_arm_command() = Cartesian("body", kInFront, 1.0);
-  const auto response = commands.Command(reach, lease, true, true, 0s);
+  const auto response = commands.Command(reach, lease, {true, true, 0s});
   ASSERT_EQ(response.status(), api::RobotCommandResponse::STATUS_OK) << response.message();
   EXPECT_EQ(commands.Locomotion(true).mode, spot_sim::LocomotionMode::kVelocity);
 

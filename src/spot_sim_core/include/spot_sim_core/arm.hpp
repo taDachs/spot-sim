@@ -27,6 +27,11 @@ struct ArmJoints {
   bool operator!=(const ArmJoints& o) const { return !(*this == o); }
 };
 
+/// The firmware counts an arm move (or a gripper move) as done once every
+/// measured joint is within this of its setpoint [rad]. An arm
+/// implementation must settle at least this close, or commands never finish.
+inline constexpr double kArmReachedTolerance = 0.01;
+
 /// What the robot's "firmware" (the Spot API side) asks the arm plugin to do:
 /// move the joints to a setpoint. Plain data, exchanged through a Gazebo
 /// component like LocomotionCommand; any arm implementation (kinematic,

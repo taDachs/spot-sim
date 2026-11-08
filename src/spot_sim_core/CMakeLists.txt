@@ -15,6 +15,7 @@ add_library(${PROJECT_NAME} SHARED
   src/api_server.cpp
   src/arm_kinematics.cpp
   src/arm_motion.cpp
+  src/command_request.cpp
   src/commands.cpp
   src/directory.cpp
   src/estop.cpp
@@ -24,6 +25,7 @@ add_library(${PROJECT_NAME} SHARED
   src/leg_kinematics.cpp
   src/power.cpp
   src/robot.cpp
+  src/robot_frames.cpp
   src/robot_state.cpp
   src/stance.cpp
   src/time_sync.cpp

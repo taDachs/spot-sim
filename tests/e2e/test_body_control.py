@@ -17,13 +17,12 @@ from sensor_msgs.msg import JointState
 from spot_msgs.msg import FootState, FootStateArray
 from spot_msgs.srv import SetStandHeight, SetVelocity
 
-from conftest import RosHarness
+from conftest import RosHarness, assert_success
 from driving import (
     MOTION_TIMEOUT_SEC,
     STAND_HEIGHT,
     Drive,
     after,
-    assert_success,
     claim_power_on_and_stand,
     pitch,
     planar_speed,

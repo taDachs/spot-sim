@@ -14,10 +14,9 @@ from rcl_interfaces.msg import Log
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from spot_msgs.srv import Dock, ListWorldObjects, MutateWorldObject
 
-from conftest import SPOT_NAME, RosHarness
+from conftest import SPOT_NAME, RosHarness, assert_success
 from driving import (
     Drive,
-    assert_success,
     claim_power_on_and_stand,
     power_off_and_release,
     twist,

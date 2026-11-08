@@ -66,6 +66,7 @@ Code pointers: API semantics in `src/spot_sim_core` (`api_server.cpp`,
 | Depth in formats other than RAW `DEPTH_U16` | Request rejected |
 | Lighting, exposure, noise, motion blur | Plain Gazebo rendering |
 | Spot CAM payload (PTZ, audio, LEDs, logpoints) | Not simulated; the driver only uses it with `initialize_spot_cam: true` (default false) |
+| Image frame tree at capture time | Each image's `transforms_snapshot` is assembled at two other moments. The mount pose (`body_T_mount`, which moves with the arm for the hand camera) is read when the rendered frame *arrives* (`spot_sim_gz/src/camera_feed.hpp`, `OnVisual` / `OnDepth`). The `odom` / `vision` / `body` edges come from the robot state when the image is *requested* (`api_server.cpp`, `ImageServiceImpl::GetImage`). While the arm moves or the robot walks, the image's frames are therefore off by the render and request latency. ROS TF is unaffected, because the driver publishes those frames from robot state. It matters for anything that projects pixels into the world from the image's own snapshot, e.g. `PickObjectInImage` (slice 11). Fix: record the robot pose and joints with the render's simulation time stamp (keep a short history in `SpotApiSystem`) and build the whole snapshot from the sample at the image's `acquisition_time`. |
 
 ## Services that are only stubs or missing
 

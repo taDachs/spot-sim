@@ -4,6 +4,7 @@
 
 #include "spot_sim_core/arm_kinematics.hpp"
 #include "spot_sim_core/leg_kinematics.hpp"
+#include "spot_sim_core/robot_frames.hpp"
 
 namespace spot_sim {
 
@@ -118,15 +119,15 @@ bosdyn::api::RobotState BuildRobotState(const RobotSnapshot& s) {
 
   // Frame tree rooted at "body", like the real robot.
   auto* tree = kin->mutable_transforms_snapshot();
-  (*tree->mutable_child_to_parent_edge_map())["body"];  // root: no parent
-  AddEdge(tree, "odom", "body", s.odom_T_body.Inverse());
-  AddEdge(tree, "vision", "body", s.vision_T_body.Inverse());
+  (*tree->mutable_child_to_parent_edge_map())[kBodyFrame];  // root: no parent
+  AddEdge(tree, kOdomFrame, kBodyFrame, s.odom_T_body.Inverse());
+  AddEdge(tree, kVisionFrame, kBodyFrame, s.vision_T_body.Inverse());
   const Pose odom_T_flat_body{s.odom_T_body.position, Quat::FromYaw(s.odom_T_body.rotation.Yaw())};
-  AddEdge(tree, "flat_body", "body", s.odom_T_body.Inverse() * odom_T_flat_body);
+  AddEdge(tree, kFlatBodyFrame, kBodyFrame, s.odom_T_body.Inverse() * odom_T_flat_body);
   // Ground plane estimate: the odom ground plane (flat ground for now).
-  AddEdge(tree, "gpe", "odom", Pose{});
+  AddEdge(tree, kGpeFrame, kOdomFrame, Pose{});
   if (s.arm) {
-    AddEdge(tree, "hand", "body", ArmKinematics::BodyTHand(s.arm->joints));
+    AddEdge(tree, kHandFrame, kBodyFrame, ArmKinematics::BodyTHand(s.arm->joints));
   }
 
   // Body velocity (same estimate in both frames until vision drift exists).

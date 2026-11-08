@@ -35,13 +35,13 @@ void AddEdge(api::FrameTreeSnapshot* tree, const std::string& child, const std::
 }
 
 std::string GreyscaleJpegOrRaw(const VisualFrame& frame, bool jpeg, int quality) {
-  std::vector<uint8_t> grey(static_cast<std::size_t>(frame.width) * frame.height);
+  std::vector<uint8_t> grey(frame.geometry.pixels());
   for (std::size_t i = 0; i < grey.size(); ++i) {
     const uint8_t* p = &frame.rgb[3 * i];
     grey[i] = static_cast<uint8_t>(std::lround(0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]));
   }
   if (jpeg) {
-    return EncodeJpeg(grey.data(), frame.width, frame.height, 1, quality);
+    return EncodeJpeg(grey.data(), frame.geometry.width, frame.geometry.height, 1, quality);
   }
   return std::string(grey.begin(), grey.end());
 }
@@ -83,22 +83,21 @@ PinholeIntrinsics PinholeIntrinsics::FromHorizontalFov(int width, int height, do
   return {f, f, 0.5 * width, 0.5 * height};
 }
 
-DepthFrame RegisterDepth(const DepthFrame& depth, const Pose& target_T_depth, int width, int height,
-                         const PinholeIntrinsics& target) {
+DepthFrame RegisterDepth(const DepthFrame& depth, const Pose& target_T_depth, const ImageGeometry& target) {
   DepthFrame out;
   out.stamp = depth.stamp;
-  out.width = width;
-  out.height = height;
-  out.intrinsics = target;
-  out.depth_mm.assign(static_cast<std::size_t>(width) * height, 0);
-  const auto& in = depth.intrinsics;
+  out.geometry = target;
+  out.depth_mm.assign(target.pixels(), 0);
+  const int width = target.width, height = target.height;
+  const PinholeIntrinsics& k = target.intrinsics;
+  const auto& in = depth.geometry.intrinsics;
   // Point of depth pixel (u, v) at range z [m], in the target frame.
   const auto to_target = [&](double u, double v, double z) {
     return target_T_depth * Pose{Vec3{(u - in.cx) * z / in.fx, (v - in.cy) * z / in.fy, z}, Quat{}};
   };
-  for (int v = 0; v < depth.height; ++v) {
-    for (int u = 0; u < depth.width; ++u) {
-      const uint16_t mm = depth.depth_mm[static_cast<std::size_t>(v) * depth.width + u];
+  for (int v = 0; v < depth.geometry.height; ++v) {
+    for (int u = 0; u < depth.geometry.width; ++u) {
+      const uint16_t mm = depth.depth_mm[static_cast<std::size_t>(v) * depth.geometry.width + u];
       if (mm == 0) {
         continue;
       }
@@ -117,8 +116,8 @@ DepthFrame RegisterDepth(const DepthFrame& depth, const Pose& target_T_depth, in
       if (a.z <= 0.0 || b.z <= 0.0) {
         continue;
       }
-      const double ua = target.fx * a.x / a.z + target.cx, va = target.fy * a.y / a.z + target.cy;
-      const double ub = target.fx * b.x / b.z + target.cx, vb = target.fy * b.y / b.z + target.cy;
+      const double ua = k.fx * a.x / a.z + k.cx, va = k.fy * a.y / a.z + k.cy;
+      const double ub = k.fx * b.x / b.z + k.cx, vb = k.fy * b.y / b.z + k.cy;
       int u0 = static_cast<int>(std::floor(std::min(ua, ub) + 0.5));
       int u1 = static_cast<int>(std::floor(std::max(ua, ub) - 0.5));
       int v0 = static_cast<int>(std::floor(std::min(va, vb) + 0.5));
@@ -248,16 +247,16 @@ api::ImageSource BodyCameras::DescribeSource(const std::string& source_name, con
   api::ImageSource out;
   out.set_name(source_name);
   // Visual and registered depth images share the visual camera's geometry.
-  std::optional<std::pair<std::pair<int, int>, PinholeIntrinsics>> geometry;
+  std::optional<ImageGeometry> geometry;
   if (source.kind == Kind::kDepth && camera.depth) {
-    geometry = {{camera.depth->width, camera.depth->height}, camera.depth->intrinsics};
+    geometry = camera.depth->geometry;
   } else if (source.kind != Kind::kDepth && camera.visual) {
-    geometry = {{camera.visual->width, camera.visual->height}, camera.visual->intrinsics};
+    geometry = camera.visual->geometry;
   }
   if (geometry) {
-    const auto& [size, k] = *geometry;
-    out.set_cols(size.first);
-    out.set_rows(size.second);
+    const PinholeIntrinsics& k = geometry->intrinsics;
+    out.set_cols(geometry->width);
+    out.set_rows(geometry->height);
     auto* intrinsics = out.mutable_pinhole()->mutable_intrinsics();
     intrinsics->mutable_focal_length()->set_x(k.fx);
     intrinsics->mutable_focal_length()->set_y(k.fy);
@@ -283,8 +282,8 @@ api::ImageSource BodyCameras::DescribeSource(const std::string& source_name, con
 void BodyCameras::AddCameraFrames(api::FrameTreeSnapshot* tree, const Camera& camera,
                                   const std::optional<Pose>& body_T_mount) {
   const auto& spec = camera.spec;
-  if (spec.mount_frame != "body" && body_T_mount) {
-    AddEdge(tree, spec.mount_frame, "body", *body_T_mount);
+  if (spec.mount_frame != kBodyFrame && body_T_mount) {
+    AddEdge(tree, spec.mount_frame, kBodyFrame, *body_T_mount);
   }
   AddEdge(tree, spec.visual_frame, spec.mount_frame, spec.mount_T_visual);
   AddEdge(tree, spec.depth_frame, spec.visual_frame, spec.mount_T_visual.Inverse() * spec.mount_T_depth);
@@ -294,7 +293,7 @@ api::ListImageSourcesResponse BodyCameras::ListImageSources() const {
   std::lock_guard<std::mutex> lock(mutex_);
   api::ListImageSourcesResponse response;
   auto* tree = response.mutable_transforms_snapshot();
-  (*tree->mutable_child_to_parent_edge_map())["body"];
+  (*tree->mutable_child_to_parent_edge_map())[kBodyFrame];
   for (const auto& [name, camera] : cameras_) {
     const auto& spec = camera.spec;
     for (const auto& [source_name, kind] :
@@ -356,13 +355,13 @@ api::ImageResponse BodyCameras::Respond(const Cameras& cameras, const api::Image
         request.quality_percent() > 0.0 ? static_cast<int>(std::lround(request.quality_percent())) : kDefaultJpegQuality;
     const bool jpeg = format == api::Image::FORMAT_JPEG;
     if (pixel_format == api::Image::PIXEL_FORMAT_RGB_U8) {
-      image->set_data(jpeg ? EncodeJpeg(frame.rgb.data(), frame.width, frame.height, 3, quality)
+      image->set_data(jpeg ? EncodeJpeg(frame.rgb.data(), frame.geometry.width, frame.geometry.height, 3, quality)
                            : std::string(frame.rgb.begin(), frame.rgb.end()));
     } else {
       image->set_data(GreyscaleJpegOrRaw(frame, jpeg, quality));
     }
-    image->set_cols(frame.width);
-    image->set_rows(frame.height);
+    image->set_cols(frame.geometry.width);
+    image->set_rows(frame.geometry.height);
     image->set_format(format);
     image->set_pixel_format(pixel_format);
     *shot->mutable_acquisition_time() = ToTimestamp(frame.stamp);
@@ -381,8 +380,7 @@ api::ImageResponse BodyCameras::Respond(const Cameras& cameras, const api::Image
     std::optional<DepthFrame> registered;
     if (source->kind == Kind::kDepthInVisual) {
       const Pose visual_T_depth = camera.spec.mount_T_visual.Inverse() * camera.spec.mount_T_depth;
-      registered = RegisterDepth(*camera.depth, visual_T_depth, camera.visual->width, camera.visual->height,
-                                 camera.visual->intrinsics);
+      registered = RegisterDepth(*camera.depth, visual_T_depth, camera.visual->geometry);
     }
     const DepthFrame& frame = registered ? *registered : *camera.depth;
     // Little-endian 16-bit millimeters, as on the robot.
@@ -392,8 +390,8 @@ api::ImageResponse BodyCameras::Respond(const Cameras& cameras, const api::Image
       data[2 * i + 1] = static_cast<char>(frame.depth_mm[i] >> 8);
     }
     image->set_data(std::move(data));
-    image->set_cols(frame.width);
-    image->set_rows(frame.height);
+    image->set_cols(frame.geometry.width);
+    image->set_rows(frame.geometry.height);
     image->set_format(api::Image::FORMAT_RAW);
     image->set_pixel_format(api::Image::PIXEL_FORMAT_DEPTH_U16);
     *shot->mutable_acquisition_time() = ToTimestamp(frame.stamp);

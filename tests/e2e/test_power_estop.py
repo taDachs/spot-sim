@@ -5,22 +5,10 @@ The tests run in order and share the robot: claim -> power on -> E-Stops -> rele
 
 from spot_msgs.msg import EStopState, EStopStateArray, LeaseArray, PowerState
 
-from conftest import STARTUP_TIMEOUT_SEC, RosHarness
+from conftest import STARTUP_TIMEOUT_SEC, RosHarness, assert_success
+from driving import wait_for_motor_state
 
 STATE_TIMEOUT_SEC = 15.0
-
-
-def wait_for_motor_state(ros: RosHarness, state: int) -> None:
-    ros.wait_for_message(
-        PowerState,
-        ros.topic("status/power_states"),
-        STATE_TIMEOUT_SEC,
-        predicate=lambda msg: msg.motor_power_state == state,
-    )
-
-
-def assert_success(response) -> None:
-    assert response.success, response.message
 
 
 def test_claim_takes_lease_and_registers_estop(ros: RosHarness) -> None:
@@ -48,21 +36,21 @@ def test_claim_takes_lease_and_registers_estop(ros: RosHarness) -> None:
 
 def test_power_on(ros: RosHarness) -> None:
     assert_success(ros.trigger("power_on"))
-    wait_for_motor_state(ros, PowerState.STATE_ON)
+    wait_for_motor_state(ros, PowerState.STATE_ON, STATE_TIMEOUT_SEC)
 
 
 def test_gentle_estop_cuts_power_and_release_allows_power_on(ros: RosHarness) -> None:
     assert_success(ros.trigger("estop/gentle"))
-    wait_for_motor_state(ros, PowerState.STATE_OFF)
+    wait_for_motor_state(ros, PowerState.STATE_OFF, STATE_TIMEOUT_SEC)
 
     assert_success(ros.trigger("estop/release"))
     assert_success(ros.trigger("power_on"))
-    wait_for_motor_state(ros, PowerState.STATE_ON)
+    wait_for_motor_state(ros, PowerState.STATE_ON, STATE_TIMEOUT_SEC)
 
 
 def test_hard_estop_cuts_power(ros: RosHarness) -> None:
     assert_success(ros.trigger("estop/hard"))
-    wait_for_motor_state(ros, PowerState.STATE_OFF)
+    wait_for_motor_state(ros, PowerState.STATE_OFF, STATE_TIMEOUT_SEC)
     ros.wait_for_message(
         EStopStateArray,
         ros.topic("status/estop"),
@@ -80,9 +68,9 @@ def test_power_on_after_hard_estop_reacquires_estop(ros: RosHarness) -> None:
     # allows while the motors are off. The robot itself refusing power-on while
     # E-Stopped is covered by spot_sim_core's unit tests.
     assert_success(ros.trigger("estop/hard"))
-    wait_for_motor_state(ros, PowerState.STATE_OFF)
+    wait_for_motor_state(ros, PowerState.STATE_OFF, STATE_TIMEOUT_SEC)
     assert_success(ros.trigger("power_on"))
-    wait_for_motor_state(ros, PowerState.STATE_ON)
+    wait_for_motor_state(ros, PowerState.STATE_ON, STATE_TIMEOUT_SEC)
     ros.wait_for_message(
         EStopStateArray,
         ros.topic("status/estop"),

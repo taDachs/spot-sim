@@ -89,19 +89,19 @@ struct Powered {
 
 TEST(Commands, StandRequiresPowerAndLease) {
   spot_sim::CommandSystem commands;
-  EXPECT_EQ(commands.Command(Stand(), LeaseOk(), /*motors_on=*/false, true, 0s).status(),
+  EXPECT_EQ(commands.Command(Stand(), LeaseOk(), {/*motors_on=*/false, true, 0s}).status(),
             api::RobotCommandResponse::STATUS_NOT_POWERED_ON);
 
   api::LeaseUseResult older;
   older.set_status(api::LeaseUseResult::STATUS_OLDER);
-  const auto response = commands.Command(Stand(), older, true, true, 0s);
+  const auto response = commands.Command(Stand(), older, {true, true, 0s});
   EXPECT_EQ(response.lease_use_result().status(), api::LeaseUseResult::STATUS_OLDER);
   EXPECT_EQ(response.robot_command_id(), 0u);
 }
 
 TEST(Commands, StandFeedbackFollowsBase) {
   Powered robot;
-  const auto response = robot.commands.Command(Stand(), LeaseOk(), true, true, 0s);
+  const auto response = robot.commands.Command(Stand(), LeaseOk(), {true, true, 0s});
   ASSERT_EQ(response.status(), api::RobotCommandResponse::STATUS_OK);
   const auto locomotion = robot.commands.Locomotion(true);
   EXPECT_EQ(locomotion.mode, LocomotionMode::kStand);
@@ -122,8 +122,8 @@ TEST(Commands, StandFeedbackFollowsBase) {
 
 TEST(Commands, NewCommandOverridesPrevious) {
   Powered robot;
-  const auto stand = robot.commands.Command(Stand(), LeaseOk(), true, true, 0s);
-  robot.commands.Command(Sit(), LeaseOk(), true, true, 0s);
+  const auto stand = robot.commands.Command(Stand(), LeaseOk(), {true, true, 0s});
+  robot.commands.Command(Sit(), LeaseOk(), {true, true, 0s});
   const auto feedback = robot.commands.Feedback(FeedbackFor(stand.robot_command_id()), robot.status);
   EXPECT_EQ(feedback.feedback().synchronized_feedback().mobility_command_feedback().status(),
             api::RobotCommandFeedbackStatus::STATUS_COMMAND_OVERRIDDEN);
@@ -132,10 +132,10 @@ TEST(Commands, NewCommandOverridesPrevious) {
 
 TEST(Commands, SafePowerOffSitsThenCutsPower) {
   Powered robot;
-  robot.commands.Command(Stand(), LeaseOk(), true, true, 0s);
+  robot.commands.Command(Stand(), LeaseOk(), {true, true, 0s});
   robot.BaseReaches(LocomotionState::kStanding);
 
-  const auto off = robot.commands.Command(SafePowerOff(), LeaseOk(), true, true, 1s);
+  const auto off = robot.commands.Command(SafePowerOff(), LeaseOk(), {true, true, 1s});
   ASSERT_EQ(off.status(), api::RobotCommandResponse::STATUS_OK);
   EXPECT_EQ(robot.commands.Locomotion(true).mode, LocomotionMode::kSit);
 
@@ -155,7 +155,7 @@ TEST(Commands, SafePowerOffSitsThenCutsPower) {
 
 TEST(Commands, SafePowerOffWhenAlreadyOffIsDone) {
   spot_sim::CommandSystem commands;
-  const auto off = commands.Command(SafePowerOff(), LeaseOk(), false, true, 0s);
+  const auto off = commands.Command(SafePowerOff(), LeaseOk(), {false, true, 0s});
   ASSERT_EQ(off.status(), api::RobotCommandResponse::STATUS_OK);
   EXPECT_EQ(commands.Feedback(FeedbackFor(off.robot_command_id()), {})
                 .feedback()
@@ -167,7 +167,7 @@ TEST(Commands, SafePowerOffWhenAlreadyOffIsDone) {
 
 TEST(Commands, SettleThenCutSitsFirst) {
   Powered robot;
-  robot.commands.Command(Stand(), LeaseOk(), true, true, 0s);
+  robot.commands.Command(Stand(), LeaseOk(), {true, true, 0s});
   robot.BaseReaches(LocomotionState::kStanding);
 
   robot.power.Step(api::ESTOP_LEVEL_SETTLE_THEN_CUT, 1s);
@@ -182,7 +182,7 @@ TEST(Commands, SettleThenCutSitsFirst) {
 
 TEST(Commands, SettleThenCutTimesOut) {
   Powered robot;
-  robot.commands.Command(Stand(), LeaseOk(), true, true, 0s);
+  robot.commands.Command(Stand(), LeaseOk(), {true, true, 0s});
   robot.BaseReaches(LocomotionState::kStanding);
   robot.commands.Step(1s, api::ESTOP_LEVEL_SETTLE_THEN_CUT, robot.power, robot.status);
   robot.commands.Step(5s, api::ESTOP_LEVEL_SETTLE_THEN_CUT, robot.power, robot.status);
@@ -193,7 +193,7 @@ TEST(Commands, SettleThenCutTimesOut) {
 
 TEST(Commands, PowerLossOverridesActiveCommand) {
   Powered robot;
-  const auto stand = robot.commands.Command(Stand(), LeaseOk(), true, true, 0s);
+  const auto stand = robot.commands.Command(Stand(), LeaseOk(), {true, true, 0s});
   robot.power.Cut();
   robot.commands.Step(1s, api::ESTOP_LEVEL_NONE, robot.power, robot.status);
   EXPECT_EQ(robot.commands.Feedback(FeedbackFor(stand.robot_command_id()), robot.status)
@@ -210,18 +210,18 @@ TEST(Commands, RejectsArmAndUnsimulatedCommands) {
   spot_sim::CommandSystem commands;
   api::RobotCommandRequest arm;
   arm.mutable_command()->mutable_synchronized_command()->mutable_arm_command();
-  EXPECT_EQ(commands.Command(arm, LeaseOk(), true, true, 0s).status(), api::RobotCommandResponse::STATUS_UNSUPPORTED);
+  EXPECT_EQ(commands.Command(arm, LeaseOk(), {true, true, 0s}).status(), api::RobotCommandResponse::STATUS_UNSUPPORTED);
   api::RobotCommandRequest battery_change;
   battery_change.mutable_command()->mutable_full_body_command()->mutable_battery_change_pose_request();
-  EXPECT_EQ(commands.Command(battery_change, LeaseOk(), true, true, 0s).status(),
+  EXPECT_EQ(commands.Command(battery_change, LeaseOk(), {true, true, 0s}).status(),
             api::RobotCommandResponse::STATUS_UNSUPPORTED);
-  EXPECT_EQ(commands.Command(api::RobotCommandRequest{}, LeaseOk(), true, true, 0s).status(),
+  EXPECT_EQ(commands.Command(api::RobotCommandRequest{}, LeaseOk(), {true, true, 0s}).status(),
             api::RobotCommandResponse::STATUS_INVALID_REQUEST);
 }
 
 TEST(Commands, VelocityDrivesBaseUntilEndTime) {
   Powered robot;
-  const auto response = robot.commands.Command(Velocity(0.5, 0.1, -0.3, 2s), LeaseOk(), true, true, 1s);
+  const auto response = robot.commands.Command(Velocity(0.5, 0.1, -0.3, 2s), LeaseOk(), {true, true, 1s});
   ASSERT_EQ(response.status(), api::RobotCommandResponse::STATUS_OK) << response.message();
   auto locomotion = robot.commands.Locomotion(true);
   EXPECT_EQ(locomotion.mode, LocomotionMode::kVelocity);
@@ -252,8 +252,8 @@ TEST(Commands, VelocityDrivesBaseUntilEndTime) {
 
 TEST(Commands, NewVelocityCommandOverridesPrevious) {
   Powered robot;
-  const auto first = robot.commands.Command(Velocity(0.5, 0, 0, 2s), LeaseOk(), true, true, 1s);
-  const auto second = robot.commands.Command(Velocity(0.2, 0, 0, 3s), LeaseOk(), true, true, 1100ms);
+  const auto first = robot.commands.Command(Velocity(0.5, 0, 0, 2s), LeaseOk(), {true, true, 1s});
+  const auto second = robot.commands.Command(Velocity(0.2, 0, 0, 3s), LeaseOk(), {true, true, 1100ms});
   robot.commands.Step(2500ms, api::ESTOP_LEVEL_NONE, robot.power, robot.status);
   EXPECT_EQ(MobilityStatus(robot.commands.Feedback(FeedbackFor(first.robot_command_id()), robot.status)),
             api::RobotCommandFeedbackStatus::STATUS_COMMAND_OVERRIDDEN);
@@ -264,13 +264,13 @@ TEST(Commands, NewVelocityCommandOverridesPrevious) {
 
 TEST(Commands, VelocityValidation) {
   Powered robot;
-  EXPECT_EQ(robot.commands.Command(Velocity(0.5, 0, 0, 2s), LeaseOk(), true, /*clock_synced=*/false, 1s).status(),
+  EXPECT_EQ(robot.commands.Command(Velocity(0.5, 0, 0, 2s), LeaseOk(), {true, /*clock_synced=*/false, 1s}).status(),
             api::RobotCommandResponse::STATUS_NO_TIMESYNC);
-  EXPECT_EQ(robot.commands.Command(Velocity(0.5, 0, 0, 1s), LeaseOk(), true, true, 1s).status(),
+  EXPECT_EQ(robot.commands.Command(Velocity(0.5, 0, 0, 1s), LeaseOk(), {true, true, 1s}).status(),
             api::RobotCommandResponse::STATUS_EXPIRED);
-  EXPECT_EQ(robot.commands.Command(Velocity(0.5, 0, 0, 2s, "gpe"), LeaseOk(), true, true, 1s).status(),
+  EXPECT_EQ(robot.commands.Command(Velocity(0.5, 0, 0, 2s, "gpe"), LeaseOk(), {true, true, 1s}).status(),
             api::RobotCommandResponse::STATUS_UNKNOWN_FRAME);
-  EXPECT_EQ(robot.commands.Command(Velocity(0.5, 0, 0, 2s), LeaseOk(), /*motors_on=*/false, true, 1s).status(),
+  EXPECT_EQ(robot.commands.Command(Velocity(0.5, 0, 0, 2s), LeaseOk(), {/*motors_on=*/false, true, 1s}).status(),
             api::RobotCommandResponse::STATUS_NOT_POWERED_ON);
   auto no_end_time = Velocity(0.5, 0, 0, 2s);
   no_end_time.mutable_command()
@@ -278,7 +278,7 @@ TEST(Commands, VelocityValidation) {
       ->mutable_mobility_command()
       ->mutable_se2_velocity_request()
       ->clear_end_time();
-  EXPECT_EQ(robot.commands.Command(no_end_time, LeaseOk(), true, true, 1s).status(),
+  EXPECT_EQ(robot.commands.Command(no_end_time, LeaseOk(), {true, true, 1s}).status(),
             api::RobotCommandResponse::STATUS_INVALID_REQUEST);
   // None of the rejected commands changed what the base does.
   EXPECT_EQ(robot.commands.Locomotion(true).mode, LocomotionMode::kSit);
@@ -287,7 +287,7 @@ TEST(Commands, VelocityValidation) {
 TEST(Commands, VelocityIsClampedToLimits) {
   Powered robot;
   const auto robot_limits = spot_sim::VelocityLimits::Robot();
-  robot.commands.Command(Velocity(10.0, -10.0, 10.0, 2s), LeaseOk(), true, true, 1s);
+  robot.commands.Command(Velocity(10.0, -10.0, 10.0, 2s), LeaseOk(), {true, true, 1s});
   auto locomotion = robot.commands.Locomotion(true);
   EXPECT_DOUBLE_EQ(locomotion.v_x, robot_limits.max_x);
   EXPECT_DOUBLE_EQ(locomotion.v_y, robot_limits.min_y);
@@ -305,7 +305,7 @@ TEST(Commands, VelocityIsClampedToLimits) {
   vel_limit->mutable_min_vel()->set_angular(-0.4);
   limited.mutable_command()->mutable_synchronized_command()->mutable_mobility_command()->mutable_params()->PackFrom(
       params);
-  robot.commands.Command(limited, LeaseOk(), true, true, 1s);
+  robot.commands.Command(limited, LeaseOk(), {true, true, 1s});
   locomotion = robot.commands.Locomotion(true);
   EXPECT_DOUBLE_EQ(locomotion.v_x, 0.3);
   EXPECT_DOUBLE_EQ(locomotion.v_y, 0.2);
@@ -315,7 +315,7 @@ TEST(Commands, VelocityIsClampedToLimits) {
 TEST(Commands, OdomFrameVelocityIsRotatedIntoBody) {
   Powered robot;
   // Facing +y in odom; moving along odom +y is moving forward.
-  robot.commands.Command(Velocity(0.0, 0.5, 0.0, 2s, "odom"), LeaseOk(), true, true, 1s, M_PI / 2);
+  robot.commands.Command(Velocity(0.0, 0.5, 0.0, 2s, "odom"), LeaseOk(), {true, true, 1s, M_PI / 2});
   const auto locomotion = robot.commands.Locomotion(true);
   EXPECT_NEAR(locomotion.v_x, 0.5, 1e-12);
   EXPECT_NEAR(locomotion.v_y, 0.0, 1e-12);
@@ -323,10 +323,10 @@ TEST(Commands, OdomFrameVelocityIsRotatedIntoBody) {
 
 TEST(Commands, StopZeroesVelocity) {
   Powered robot;
-  robot.commands.Command(Velocity(0.5, 0, 0.2, 5s), LeaseOk(), true, true, 1s);
+  robot.commands.Command(Velocity(0.5, 0, 0.2, 5s), LeaseOk(), {true, true, 1s});
   api::RobotCommandRequest stop;
   stop.mutable_command()->mutable_synchronized_command()->mutable_mobility_command()->mutable_stop_request();
-  robot.commands.Command(stop, LeaseOk(), true, true, 1100ms);
+  robot.commands.Command(stop, LeaseOk(), {true, true, 1100ms});
   const auto locomotion = robot.commands.Locomotion(true);
   EXPECT_EQ(locomotion.mode, LocomotionMode::kStop);
   EXPECT_EQ(locomotion.v_x, 0.0);
@@ -357,7 +357,7 @@ api::RobotCommandRequest StandWith(const api::spot::MobilityParams& params) {
 
 TEST(Commands, StandAppliesBodyPosture) {
   Powered robot;
-  robot.commands.Command(StandWith(BodyParams(-0.1, 0.1, -0.2, 0.3)), LeaseOk(), true, true, 0s);
+  robot.commands.Command(StandWith(BodyParams(-0.1, 0.1, -0.2, 0.3)), LeaseOk(), {true, true, 0s});
   const auto locomotion = robot.commands.Locomotion(true);
   EXPECT_EQ(locomotion.mode, LocomotionMode::kStand);
   EXPECT_NEAR(locomotion.body_height_offset, -0.1, 1e-12);
@@ -368,7 +368,7 @@ TEST(Commands, StandAppliesBodyPosture) {
 
 TEST(Commands, BodyPostureIsSaturated) {
   Powered robot;
-  robot.commands.Command(StandWith(BodyParams(-1.0, 0.0, 0.0, 1.2)), LeaseOk(), true, true, 0s);
+  robot.commands.Command(StandWith(BodyParams(-1.0, 0.0, 0.0, 1.2)), LeaseOk(), {true, true, 0s});
   const auto locomotion = robot.commands.Locomotion(true);
   EXPECT_DOUBLE_EQ(locomotion.body_height_offset, spot_sim::BodyPosture::Min().height_offset);
   EXPECT_DOUBLE_EQ(locomotion.body_yaw, spot_sim::BodyPosture::Max().yaw);
@@ -376,13 +376,13 @@ TEST(Commands, BodyPostureIsSaturated) {
 
 TEST(Commands, PlainStandAndSitResetPosture) {
   Powered robot;
-  robot.commands.Command(StandWith(BodyParams(-0.1, 0.0, 0.2, 0.0)), LeaseOk(), true, true, 0s);
-  robot.commands.Command(Stand(), LeaseOk(), true, true, 0s);
+  robot.commands.Command(StandWith(BodyParams(-0.1, 0.0, 0.2, 0.0)), LeaseOk(), {true, true, 0s});
+  robot.commands.Command(Stand(), LeaseOk(), {true, true, 0s});
   EXPECT_EQ(robot.commands.Locomotion(true).body_height_offset, 0.0);
   EXPECT_EQ(robot.commands.Locomotion(true).body_pitch, 0.0);
 
-  robot.commands.Command(StandWith(BodyParams(-0.1, 0.0, 0.2, 0.0)), LeaseOk(), true, true, 0s);
-  robot.commands.Command(Sit(), LeaseOk(), true, true, 0s);
+  robot.commands.Command(StandWith(BodyParams(-0.1, 0.0, 0.2, 0.0)), LeaseOk(), {true, true, 0s});
+  robot.commands.Command(Sit(), LeaseOk(), {true, true, 0s});
   EXPECT_EQ(robot.commands.Locomotion(true).body_height_offset, 0.0);
 }
 
@@ -391,7 +391,7 @@ TEST(Commands, VelocityCarriesBodyPostureAndStopKeepsIt) {
   auto walk = Velocity(0.3, 0.0, 0.0, 2s);
   walk.mutable_command()->mutable_synchronized_command()->mutable_mobility_command()->mutable_params()->PackFrom(
       BodyParams(-0.12, 0.0, 0.0, 0.0));
-  robot.commands.Command(walk, LeaseOk(), true, true, 1s);
+  robot.commands.Command(walk, LeaseOk(), {true, true, 1s});
   EXPECT_NEAR(robot.commands.Locomotion(true).body_height_offset, -0.12, 1e-12);
   // The velocity command ends: the robot keeps standing low.
   robot.commands.Step(2s, api::ESTOP_LEVEL_NONE, robot.power, robot.status);
@@ -399,7 +399,7 @@ TEST(Commands, VelocityCarriesBodyPostureAndStopKeepsIt) {
   EXPECT_NEAR(robot.commands.Locomotion(true).body_height_offset, -0.12, 1e-12);
   api::RobotCommandRequest stop;
   stop.mutable_command()->mutable_synchronized_command()->mutable_mobility_command()->mutable_stop_request();
-  robot.commands.Command(stop, LeaseOk(), true, true, 2s);
+  robot.commands.Command(stop, LeaseOk(), {true, true, 2s});
   EXPECT_NEAR(robot.commands.Locomotion(true).body_height_offset, -0.12, 1e-12);
 }
 
@@ -408,7 +408,7 @@ TEST(Commands, UnsetRotationMeansLevel) {
   api::spot::MobilityParams params;
   params.mutable_body_control()->mutable_base_offset_rt_footprint()->add_points()->mutable_pose()->mutable_position()->set_z(
       0.05);
-  robot.commands.Command(StandWith(params), LeaseOk(), true, true, 0s);
+  robot.commands.Command(StandWith(params), LeaseOk(), {true, true, 0s});
   const auto locomotion = robot.commands.Locomotion(true);
   EXPECT_NEAR(locomotion.body_height_offset, 0.05, 1e-12);
   EXPECT_EQ(locomotion.body_roll, 0.0);
@@ -420,12 +420,12 @@ TEST(Commands, SelfRightEndsSitting) {
   Powered robot;
   api::RobotCommandRequest selfright;
   selfright.mutable_command()->mutable_full_body_command()->mutable_selfright_request();
-  EXPECT_EQ(robot.commands.Command(selfright, LeaseOk(), /*motors_on=*/false, true, 0s).status(),
+  EXPECT_EQ(robot.commands.Command(selfright, LeaseOk(), {/*motors_on=*/false, true, 0s}).status(),
             api::RobotCommandResponse::STATUS_NOT_POWERED_ON);
 
-  robot.commands.Command(Stand(), LeaseOk(), true, true, 0s);
+  robot.commands.Command(Stand(), LeaseOk(), {true, true, 0s});
   robot.BaseReaches(LocomotionState::kStanding);
-  const auto response = robot.commands.Command(selfright, LeaseOk(), true, true, 0s);
+  const auto response = robot.commands.Command(selfright, LeaseOk(), {true, true, 0s});
   ASSERT_EQ(response.status(), api::RobotCommandResponse::STATUS_OK);
   EXPECT_EQ(robot.commands.Locomotion(true).mode, LocomotionMode::kSit);
   const auto feedback = [&] {

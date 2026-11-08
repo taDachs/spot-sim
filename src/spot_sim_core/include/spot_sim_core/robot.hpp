@@ -48,6 +48,9 @@ struct Firmware {
   LocomotionStatus locomotion;  ///< last status reported by the base
   GraspState grasp;
   bosdyn::api::GripperCameraParams gripper_camera_params;
+
+  /// Checks a request's lease now (and keeps it from going stale).
+  bosdyn::api::LeaseUseResult UseLease(const bosdyn::api::Lease& attempted);
 };
 
 /// The simulated robot's shared state. The simulation thread advances the
@@ -84,6 +87,9 @@ class Robot {
 
   /// RobotState: simulation snapshot plus firmware state (power, E-Stops).
   bosdyn::api::RobotState State() const;
+
+  /// Firmware::UseLease under the firmware lock.
+  bosdyn::api::LeaseUseResult UseLease(const bosdyn::api::Lease& lease);
 
   /// Runs `fn(Firmware&)` under the firmware lock and returns its result.
   template <typename Fn>

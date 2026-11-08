@@ -10,7 +10,7 @@ from nav_msgs.msg import Odometry
 from rclpy.qos import qos_profile_sensor_data
 from spot_msgs.msg import LeaseArray, PowerState
 
-from conftest import STARTUP_TIMEOUT_SEC, RosHarness
+from conftest import STARTUP_TIMEOUT_SEC, RosHarness, assert_success
 
 RTF = float(os.environ.get("RTF", "1.0"))
 MOTION_TIMEOUT_SEC = 20.0
@@ -102,10 +102,6 @@ def pitch(msg: Odometry) -> float:
     return math.asin(max(-1.0, min(1.0, 2.0 * (q.w * q.y - q.z * q.x))))
 
 
-def assert_success(response) -> None:
-    assert response.success, response.message
-
-
 def wait_for_odometry(ros: RosHarness, predicate: typing.Callable[[Odometry], bool]) -> Odometry:
     return ros.wait_for_message(Odometry, ros.topic("odometry"), MOTION_TIMEOUT_SEC, predicate=predicate)
 
@@ -114,11 +110,11 @@ def wait_for_body_height(ros: RosHarness, height: float, tolerance: float = 0.01
     return wait_for_odometry(ros, lambda msg: abs(msg.pose.pose.position.z - height) < tolerance)
 
 
-def wait_for_motor_state(ros: RosHarness, state: int) -> None:
+def wait_for_motor_state(ros: RosHarness, state: int, timeout_sec: float = MOTION_TIMEOUT_SEC) -> None:
     ros.wait_for_message(
         PowerState,
         ros.topic("status/power_states"),
-        MOTION_TIMEOUT_SEC,
+        timeout_sec,
         predicate=lambda msg: msg.motor_power_state == state,
     )
 

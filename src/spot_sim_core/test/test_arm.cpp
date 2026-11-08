@@ -85,7 +85,7 @@ struct PoweredArm {
   }
 
   api::RobotCommandResponse Command(const api::RobotCommandRequest& request) {
-    return commands.Command(request, LeaseOk(), power.MotorsOn(), true, 0s);
+    return commands.Command(request, LeaseOk(), {power.MotorsOn(), true, 0s});
   }
 
   void Step() { commands.Step(0s, api::ESTOP_LEVEL_NONE, power, status, arm); }
@@ -251,14 +251,14 @@ TEST(ArmState, DirectoryListsArmServicesOnlyWithAnArm) {
 
 TEST(ArmCommands, RejectedWithoutArmOrPower) {
   spot_sim::CommandSystem no_arm;
-  EXPECT_EQ(no_arm.Command(Named(api::NamedArmPositionsCommand::POSITIONS_READY), LeaseOk(), true, true, 0s).status(),
+  EXPECT_EQ(no_arm.Command(Named(api::NamedArmPositionsCommand::POSITIONS_READY), LeaseOk(), {true, true, 0s}).status(),
             api::RobotCommandResponse::STATUS_UNSUPPORTED);
 
   spot_sim::CommandSystem arm;
   arm.EnableArm();
-  EXPECT_EQ(arm.Command(Named(api::NamedArmPositionsCommand::POSITIONS_READY), LeaseOk(), false, true, 0s).status(),
+  EXPECT_EQ(arm.Command(Named(api::NamedArmPositionsCommand::POSITIONS_READY), LeaseOk(), {false, true, 0s}).status(),
             api::RobotCommandResponse::STATUS_NOT_POWERED_ON);
-  EXPECT_EQ(arm.Command(Named(api::NamedArmPositionsCommand::POSITIONS_UNKNOWN), LeaseOk(), true, true, 0s).status(),
+  EXPECT_EQ(arm.Command(Named(api::NamedArmPositionsCommand::POSITIONS_UNKNOWN), LeaseOk(), {true, true, 0s}).status(),
             api::RobotCommandResponse::STATUS_INVALID_REQUEST);
 }
 

@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <variant>
 
 #include <bosdyn/api/arm_command.pb.h>
 #include <bosdyn/api/estop.pb.h>
@@ -16,6 +17,7 @@
 
 #include "spot_sim_core/arm.hpp"
 #include "spot_sim_core/arm_motion.hpp"
+#include "spot_sim_core/command_request.hpp"
 #include "spot_sim_core/locomotion.hpp"
 #include "spot_sim_core/power.hpp"
 #include "spot_sim_core/robot_state.hpp"
@@ -32,6 +34,16 @@ struct VelocityLimits {
   /// Approximation of the real robot's own limits; requests beyond them are
   /// clamped, as MobilityParams.vel_limit can only tighten them.
   static VelocityLimits Robot() { return {}; }
+};
+
+/// What the robot knows about itself when a command arrives.
+struct CommandContext {
+  bool motors_on = false;
+  bool clock_synced = false;  ///< the request's clock_identifier has an established time sync
+  RobotTime now{0};
+  /// Current body heading in odom, to express se2 velocities given in
+  /// odom/vision in the body frame.
+  double odom_yaw = 0.0;
 };
 
 /// RobotCommandService semantics: validates commands, turns them into a
@@ -63,11 +75,8 @@ class CommandSystem {
   /// The robot has an arm: arm and gripper commands are accepted.
   void EnableArm() { has_arm_ = true; }
 
-  /// `odom_yaw`: current body heading in odom, to express se2 velocities
-  /// given in odom/vision in the body frame.
   bosdyn::api::RobotCommandResponse Command(const bosdyn::api::RobotCommandRequest& request,
-                                            const bosdyn::api::LeaseUseResult& lease, bool motors_on,
-                                            bool clock_synced, RobotTime now, double odom_yaw = 0.0);
+                                            const bosdyn::api::LeaseUseResult& lease, const CommandContext& context);
 
   bosdyn::api::RobotCommandFeedbackResponse Feedback(const bosdyn::api::RobotCommandFeedbackRequest& request,
                                                      const LocomotionStatus& status) const;
@@ -86,8 +95,27 @@ class CommandSystem {
   ArmCommand Arm(bool motors_on) const;
 
  private:
-  enum class Kind { kStand, kSit, kMobilityStop, kVelocity, kFullBodyStop, kSafePowerOff, kSelfRight };
+  /// The mobility or full-body part of a command, with the state that only
+  /// some kinds of command have.
+  struct BodyPart {
+    struct Stand {};
+    struct Sit {};
+    struct MobilityStop {};
+    struct Velocity {
+      RobotTime end_time{0};
+      bool timed_out = false;  ///< reached its end time
+    };
+    struct FullBodyStop {};
+    struct SafePowerOff {
+      bool done = false;  ///< motor power is off
+    };
+    struct SelfRight {};
+    using Kind = std::variant<Stand, Sit, MobilityStop, Velocity, FullBodyStop, SafePowerOff, SelfRight>;
 
+    Kind kind;
+    uint32_t sequence = 0;  ///< LocomotionCommand sequence it issued
+    bool overridden = false;
+  };
   struct ArmPart {
     std::shared_ptr<const ArmMotion> motion;
     bool overridden = false;
@@ -97,36 +125,34 @@ class CommandSystem {
     bool reached = false;
   };
   struct Record {
-    bool has_body = false;   ///< a mobility or full-body command
-    Kind kind = Kind::kStand;
-    uint32_t sequence = 0;
-    bool overridden = false;
-    bool done = false;       ///< safe power off completed
-    bool timed_out = false;  ///< velocity command reached its end time
-    RobotTime end_time{0};   ///< velocity commands
+    std::optional<BodyPart> body;
     std::optional<ArmPart> arm;
     std::optional<GripperPart> gripper;
   };
 
-  bosdyn::api::RobotCommandResponse Mobility(const bosdyn::api::MobilityCommand::Request& mobility, bool motors_on,
-                                             bool clock_synced, RobotTime now, double odom_yaw,
-                                             bosdyn::api::RobotCommandResponse response);
-  bosdyn::api::RobotCommandResponse Velocity(const bosdyn::api::SE2VelocityCommand::Request& request,
-                                             const bosdyn::api::spot::MobilityParams& params, bool clock_synced,
-                                             RobotTime now, double odom_yaw,
-                                             bosdyn::api::RobotCommandResponse response);
-  /// Validates a gripper request; an error message if it cannot be executed.
-  static std::optional<std::string> CheckGripper(const bosdyn::api::GripperCommand::Request& request);
+  /// The id of the command a request started, or why it was refused.
+  using Issued = std::variant<uint32_t, Rejection>;
+
+  Issued FullBody(const bosdyn::api::FullBodyCommand::Request& request, const CommandContext& context);
+  Issued Synchronized(const bosdyn::api::SynchronizedCommand::Request& request, const CommandContext& context);
+  Issued Mobility(const bosdyn::api::MobilityCommand::Request& request, const CommandContext& context);
+  Issued Velocity(const bosdyn::api::SE2VelocityCommand::Request& request,
+                  const bosdyn::api::spot::MobilityParams& params, const CommandContext& context);
+  /// Validates a gripper request: why it cannot be executed, if it cannot.
+  static std::optional<Rejection> CheckGripper(const bosdyn::api::GripperCommand::Request& request);
   ArmContext CurrentArmContext() const;
   /// Makes `motion` drive the arm (recorded under command `id` unless 0).
-  void StartArm(uint32_t id, ArmMotion motion);
+  void StartArm(uint32_t id, std::unique_ptr<ArmMotion> motion);
   void ApplyArm();
   void StartGripper(uint32_t id, const bosdyn::api::GripperCommand::Request& request);
 
   void SetPosture(const BodyPosture& posture);
 
   uint32_t NewRecord();
-  uint32_t Issue(Kind kind, LocomotionMode mode);
+  /// Starts a mobility or full-body command: a new LocomotionCommand.
+  uint32_t Issue(BodyPart::Kind kind, LocomotionMode mode);
+  /// The body part of the command driving locomotion, if any.
+  BodyPart* ActiveBody();
   void OverrideActive();
   void OverrideArm();
   void OverrideGripper();
@@ -137,7 +163,8 @@ class CommandSystem {
   void StowArm();
   bool ArmStowed() const;
   Record* Find(std::optional<uint32_t> id);
-  static bool Reached(const Record& record, const LocomotionStatus& status, LocomotionState state);
+  /// The base reached `state` for LocomotionCommand `sequence` (or a later one).
+  static bool Reached(uint32_t sequence, const LocomotionStatus& status, LocomotionState state);
 
   std::chrono::nanoseconds settle_timeout_;
   std::map<uint32_t, Record> records_;

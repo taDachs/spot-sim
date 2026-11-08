@@ -18,8 +18,8 @@ from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import Buffer, TransformListener
 
-from conftest import SPOT_NAME, STARTUP_TIMEOUT_SEC, RosHarness
-from driving import assert_success, claim_power_on_and_stand, power_off_and_release, wait_for_body_height
+from conftest import STARTUP_TIMEOUT_SEC, RosHarness, assert_success, frame
+from driving import claim_power_on_and_stand, power_off_and_release, wait_for_body_height
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("IMAGES", "false").lower() not in ("1", "true"), reason="needs IMAGES=true"
@@ -38,10 +38,6 @@ VISUAL_FRAME = {**{camera: f"{camera}_fisheye" for camera in BODY_CAMERAS}, "han
 DEPTH_FRAME = {**{camera: camera for camera in BODY_CAMERAS}, "hand": "hand_depth_sensor"}
 # The driver's rgb_cameras parameter (config/driver_launch.sh); the hand camera is always in color.
 RGB_CAMERAS = os.environ.get("RGB_CAMERAS", "true").lower() in ("1", "true")
-
-
-def frame(name: str) -> str:
-    return f"{SPOT_NAME}/{name}" if SPOT_NAME else name
 
 
 def stamp_sec(stamp) -> float:

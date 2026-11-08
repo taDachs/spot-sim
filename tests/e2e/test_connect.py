@@ -7,7 +7,7 @@ from sensor_msgs.msg import JointState
 from spot_msgs.msg import BatteryStateArray, FootStateArray, PowerState
 from tf2_msgs.msg import TFMessage
 
-from conftest import STARTUP_TIMEOUT_SEC, USE_SIM_TIME, SPOT_NAME, RosHarness
+from conftest import STARTUP_TIMEOUT_SEC, USE_SIM_TIME, RosHarness, frame
 
 LEG_JOINTS = {
     f"{leg}_{joint}"
@@ -19,10 +19,6 @@ LEG_JOINTS = {
 SIM_TIME_UPPER_BOUND_SEC = 1e8
 
 
-def prefixed(name: str) -> str:
-    return f"{SPOT_NAME}/{name}" if SPOT_NAME else name
-
-
 def test_clock_is_bridged(ros: RosHarness) -> None:
     msg = ros.wait_for_message(Clock, "/clock", timeout_sec=30.0)
     assert msg.clock.sec < SIM_TIME_UPPER_BOUND_SEC
@@ -30,7 +26,7 @@ def test_clock_is_bridged(ros: RosHarness) -> None:
 
 def test_joint_states_cover_all_legs(ros: RosHarness) -> None:
     msg = ros.wait_for_message(JointState, ros.topic("joint_states"), STARTUP_TIMEOUT_SEC)
-    assert {prefixed(j) for j in LEG_JOINTS} <= set(msg.name)
+    assert {frame(j) for j in LEG_JOINTS} <= set(msg.name)
     assert len(msg.position) == len(msg.name)
 
 
@@ -48,7 +44,7 @@ def test_state_is_stamped_with_robot_clock(ros: RosHarness) -> None:
 def test_tf_has_odom_to_body(ros: RosHarness) -> None:
     def has_odom_body(msg: TFMessage) -> bool:
         return any(
-            t.header.frame_id == prefixed("odom") and t.child_frame_id == prefixed("body") for t in msg.transforms
+            t.header.frame_id == frame("odom") and t.child_frame_id == frame("body") for t in msg.transforms
         )
 
     ros.wait_for_message(TFMessage, "/tf", STARTUP_TIMEOUT_SEC, predicate=has_odom_body)

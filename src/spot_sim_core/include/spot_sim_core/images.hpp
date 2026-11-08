@@ -13,6 +13,7 @@
 #include <bosdyn/api/image.pb.h>
 
 #include "spot_sim_core/geometry.hpp"
+#include "spot_sim_core/robot_frames.hpp"
 #include "spot_sim_core/time.hpp"
 
 namespace spot_sim {
@@ -26,11 +27,18 @@ struct PinholeIntrinsics {
   static PinholeIntrinsics FromHorizontalFov(int width, int height, double hfov);
 };
 
+/// Size and intrinsics of a camera image.
+struct ImageGeometry {
+  int width = 0, height = 0;
+  PinholeIntrinsics intrinsics;
+
+  std::size_t pixels() const { return static_cast<std::size_t>(width) * static_cast<std::size_t>(height); }
+};
+
 /// The latest image of a visual (color) camera.
 struct VisualFrame {
   RobotTime stamp{0};
-  int width = 0, height = 0;
-  PinholeIntrinsics intrinsics;
+  ImageGeometry geometry;
   std::vector<uint8_t> rgb;  ///< width * height * 3, row-major, top row first
   /// Pose of the camera's mount frame in the body frame when the image was
   /// taken (cameras on moving mounts, e.g. the hand camera on the wrist).
@@ -40,8 +48,7 @@ struct VisualFrame {
 /// The latest image of a depth camera.
 struct DepthFrame {
   RobotTime stamp{0};
-  int width = 0, height = 0;
-  PinholeIntrinsics intrinsics;
+  ImageGeometry geometry;
   std::vector<uint16_t> depth_mm;  ///< width * height, distance along the optical axis, 0 = no return
   std::optional<Pose> body_T_mount;  ///< as in VisualFrame
 };
@@ -52,7 +59,7 @@ struct CameraSpec {
   std::string visual_source, depth_source, depth_in_visual_source;
   std::string visual_frame, depth_frame;
   /// "body", or a moving frame (then each image carries body_T_mount).
-  std::string mount_frame = "body";
+  std::string mount_frame = kBodyFrame;
   Pose mount_T_visual;  ///< optical frames (z forward, x right, y down)
   Pose mount_T_depth;
 
@@ -70,14 +77,13 @@ struct CameraSpec {
 /// robot's DEPTH_U16 millimeters. Values outside (0, 65.535] m become 0.
 std::vector<uint16_t> DepthToMillimeters(const float* meters, std::size_t count);
 
-/// Re-projects `depth` into another camera with the given image size and
-/// intrinsics; `target_T_depth` is the depth camera's optical frame in the
+/// Re-projects `depth` into another camera with geometry `target`;
+/// `target_T_depth` is the depth camera's optical frame in the
 /// target's optical frame. Each depth pixel covers the target pixels its
 /// footprint projects to; the nearest surface wins; pixels nothing projects
 /// to stay 0. (What depth_image_proc's RegisterNode does, and what Spot does
 /// for its <cam>_depth_in_visual_frame sources.)
-DepthFrame RegisterDepth(const DepthFrame& depth, const Pose& target_T_depth, int width, int height,
-                         const PinholeIntrinsics& target);
+DepthFrame RegisterDepth(const DepthFrame& depth, const Pose& target_T_depth, const ImageGeometry& target);
 
 /// JPEG encoding of 8-bit RGB or greyscale pixels.
 std::string EncodeJpeg(const uint8_t* pixels, int width, int height, int channels, int quality);

@@ -22,11 +22,10 @@ from spot_msgs.srv import GetGripperCameraParameters, OverrideGraspOrCarry, SetG
 from std_msgs.msg import Bool
 from tf2_ros import Buffer, TransformListener
 
-from conftest import SPOT_NAME, STARTUP_TIMEOUT_SEC, RosHarness
+from conftest import STARTUP_TIMEOUT_SEC, RosHarness, assert_success, frame
 from driving import (
     MOTION_TIMEOUT_SEC,
     STAND_HEIGHT,
-    assert_success,
     claim_power_on_and_stand,
     power_off_and_release,
     wait_for_body_height,
@@ -37,10 +36,6 @@ pytestmark = pytest.mark.skipif(os.environ.get("ARM", "false").lower() not in ("
 ARM_JOINTS = ["arm_sh0", "arm_sh1", "arm_el0", "arm_el1", "arm_wr0", "arm_wr1", "arm_f1x"]
 GRIPPER_OPEN = -1.57
 SIT_HEIGHT = 0.20
-
-
-def frame(name: str) -> str:
-    return f"{SPOT_NAME}/{name}" if SPOT_NAME else name
 
 
 def manipulator_state(ros: RosHarness, predicate=lambda _: True) -> ManipulatorState:

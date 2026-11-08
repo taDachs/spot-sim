@@ -19,6 +19,10 @@ bosdyn::api::GripperCameraParams DefaultGripperCameraParams() {
   return params;
 }
 
+bosdyn::api::LeaseUseResult Firmware::UseLease(const bosdyn::api::Lease& attempted) {
+  return lease.Use(attempted, Robot::WallNow());
+}
+
 Robot::Robot(RobotConfig config) : config_(std::move(config)), snapshot_(SittingSnapshot(RobotTime{0})) {
   if (config_.has_arm) {
     snapshot_.arm = ArmSample{};
@@ -52,6 +56,11 @@ ArmCommand Robot::Arm() {
 LocomotionCommand Robot::Locomotion() {
   std::lock_guard<std::mutex> lock(firmware_mutex_);
   return firmware_.commands.Locomotion(firmware_.power.MotorsOn());
+}
+
+bosdyn::api::LeaseUseResult Robot::UseLease(const bosdyn::api::Lease& lease) {
+  std::lock_guard<std::mutex> lock(firmware_mutex_);
+  return firmware_.UseLease(lease);
 }
 
 void Robot::SetLocomotionStatus(const LocomotionStatus& status) {

@@ -58,6 +58,19 @@ spot_sim::Pose ToPose(const gz::math::Pose3d& p) {
   return spot_sim::Pose{{p.Pos().X(), p.Pos().Y(), p.Pos().Z()},
                         {p.Rot().W(), p.Rot().X(), p.Rot().Y(), p.Rot().Z()}};
 }
+
+/// A joint's position and velocity along its first axis (0 until Gazebo has
+/// computed them).
+struct JointReading {
+  double position = 0.0, velocity = 0.0;
+};
+
+JointReading Read(const gz::sim::Joint& joint, const gz::sim::EntityComponentManager& ecm) {
+  const auto first = [](const std::optional<std::vector<double>>& values) {
+    return values && !values->empty() ? values->front() : 0.0;
+  };
+  return JointReading{first(joint.Position(ecm)), first(joint.Velocity(ecm))};
+}
 }  // namespace
 
 class SpotApiSystem : public gz::sim::System,
@@ -261,20 +274,16 @@ class SpotApiSystem : public gz::sim::System,
 
     snapshot_.joints.clear();
     for (std::size_t i = 0; i < joints_.size(); ++i) {
-      const auto position = joints_[i].Position(ecm);
-      const auto velocity = joints_[i].Velocity(ecm);
-      snapshot_.joints.push_back(spot_sim::JointSample{
-          spot_sim::kLegJointNames[i], position && !position->empty() ? position->front() : 0.0,
-          velocity && !velocity->empty() ? velocity->front() : 0.0});
+      const JointReading joint = Read(joints_[i], ecm);
+      snapshot_.joints.push_back(spot_sim::JointSample{spot_sim::kLegJointNames[i], joint.position, joint.velocity});
     }
 
     if (robot_->config().has_arm) {
       std::array<double, 7> q{}, dq{};
       for (std::size_t i = 0; i < arm_joints_.size(); ++i) {
-        const auto position = arm_joints_[i].Position(ecm);
-        const auto velocity = arm_joints_[i].Velocity(ecm);
-        q[i] = position && !position->empty() ? position->front() : 0.0;
-        dq[i] = velocity && !velocity->empty() ? velocity->front() : 0.0;
+        const JointReading joint = Read(arm_joints_[i], ecm);
+        q[i] = joint.position;
+        dq[i] = joint.velocity;
       }
       spot_sim::ArmSample arm;
       arm.joints = spot_sim::ArmJoints{q[0], q[1], q[2], q[3], q[4], q[5]};
