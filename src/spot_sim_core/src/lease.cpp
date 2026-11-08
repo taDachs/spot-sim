@@ -3,6 +3,7 @@
 #include <iomanip>
 #include <random>
 #include <sstream>
+#include <vector>
 
 namespace spot_sim {
 
@@ -12,6 +13,9 @@ namespace {
 constexpr const char* kRoot = "all-leases";
 constexpr const char* kBody = "body";
 constexpr const char* kMobility = "mobility";
+constexpr const char* kFullArm = "full-arm";
+constexpr const char* kArm = "arm";
+constexpr const char* kGripper = "gripper";
 
 /// A fresh epoch per simulator run, so leases from a previous run are rejected.
 std::string NewEpoch() {
@@ -24,7 +28,12 @@ std::string NewEpoch() {
 
 LeaseManager::LeaseManager(std::chrono::nanoseconds stale_timeout) : stale_timeout_(stale_timeout), epoch_(NewEpoch()) {}
 
-bool LeaseManager::IsKnownResource(const std::string& resource) { return resource == kBody || resource == kMobility; }
+bool LeaseManager::IsKnownResource(const std::string& resource) const {
+  if (resource == kBody || resource == kMobility) {
+    return true;
+  }
+  return has_arm_ && (resource == kFullArm || resource == kArm || resource == kGripper);
+}
 
 bool LeaseManager::IsStale(WallTime now) const { return !owned_ || now - last_used_ > stale_timeout_; }
 
@@ -134,8 +143,16 @@ api::ListLeasesResponse LeaseManager::List(WallTime now) const {
   auto* body = tree->add_sub_resources();
   body->set_resource(kBody);
   body->add_sub_resources()->set_resource(kMobility);
+  std::vector<const char*> names = {kBody, kMobility};
+  if (has_arm_) {
+    auto* full_arm = body->add_sub_resources();
+    full_arm->set_resource(kFullArm);
+    full_arm->add_sub_resources()->set_resource(kArm);
+    full_arm->add_sub_resources()->set_resource(kGripper);
+    names.insert(names.end(), {kFullArm, kArm, kGripper});
+  }
 
-  for (const char* name : {kBody, kMobility}) {
+  for (const char* name : names) {
     auto* resource = response.add_resources();
     resource->set_resource(name);
     if (sequence_ > 0) {

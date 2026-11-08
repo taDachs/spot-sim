@@ -1,7 +1,8 @@
 // Gazebo system plugin that turns a simulation into a Spot robot on the
 // network: it serves the Spot gRPC API (spot_sim_core), feeds it the
 // simulation clock and the robot's state as Gazebo sees it, and hands the
-// resulting locomotion targets to the base plugin on the robot model.
+// resulting locomotion targets to the base plugin on the robot model (and,
+// with <arm>true</arm>, arm targets to the arm plugin).
 // Camera sensors named after Spot's body cameras (frontleft, frontright,
 // left, right, back) plus depth cameras "<cam>_depth" on the body link
 // become image sources.
@@ -35,6 +36,7 @@
 #include <sdf/Sensor.hh>
 
 #include <spot_sim_core/api_server.hpp>
+#include <spot_sim_core/arm_kinematics.hpp>
 #include <spot_sim_core/leg_kinematics.hpp>
 #include <spot_sim_core/robot.hpp>
 
@@ -46,6 +48,12 @@ namespace spot_sim_gz {
 namespace components = gz::sim::components;
 
 namespace {
+/// URDF names of the arm joints (ArmJoints order) followed by the gripper joint.
+const std::array<const char*, 7> kGazeboArmJointNames = {
+    spot_sim::kUrdfArmJointNames[0], spot_sim::kUrdfArmJointNames[1], spot_sim::kUrdfArmJointNames[2],
+    spot_sim::kUrdfArmJointNames[3], spot_sim::kUrdfArmJointNames[4], spot_sim::kUrdfArmJointNames[5],
+    spot_sim::kUrdfGripperJointName};
+
 spot_sim::Pose ToPose(const gz::math::Pose3d& p) {
   return spot_sim::Pose{{p.Pos().X(), p.Pos().Y(), p.Pos().Z()},
                         {p.Rot().W(), p.Rot().X(), p.Rot().Y(), p.Rot().Z()}};
@@ -63,6 +71,7 @@ class SpotApiSystem : public gz::sim::System,
     robot_config.nickname = sdf->Get<std::string>("nickname", robot_config.nickname).first;
     robot_config.username = sdf->Get<std::string>("username", robot_config.username).first;
     robot_config.password = sdf->Get<std::string>("password", robot_config.password).first;
+    robot_config.has_arm = sdf->Get<bool>("arm", false).first;
     model_name_ = sdf->Get<std::string>("model_name", model_name_).first;
     body_link_name_ = sdf->Get<std::string>("body_link", body_link_name_).first;
 
@@ -71,7 +80,7 @@ class SpotApiSystem : public gz::sim::System,
     const int port = sdf->Get<int>("port", 443).first;
 
     robot_ = std::make_unique<spot_sim::Robot>(robot_config);
-    snapshot_ = spot_sim::SittingSnapshot(spot_sim::RobotTime{0});
+    snapshot_ = robot_->Snapshot();  // sitting; with an arm, stowed
 
     try {
       spot_sim::ServerConfig server_config;
@@ -97,6 +106,9 @@ class SpotApiSystem : public gz::sim::System,
     }
     if (model_) {
       ecm.SetComponentData<components::SpotLocomotionCommand>(model_->Entity(), robot_->Locomotion());
+      if (robot_->config().has_arm) {
+        ecm.SetComponentData<components::SpotArmCommand>(model_->Entity(), robot_->Arm());
+      }
     }
   }
 
@@ -134,6 +146,18 @@ class SpotApiSystem : public gz::sim::System,
       joints_[i] = gz::sim::Joint(model.JointByName(ecm, joint_names[i]));
       joints_[i].EnablePositionCheck(ecm, true);
       joints_[i].EnableVelocityCheck(ecm, true);
+    }
+    if (robot_->config().has_arm) {
+      for (std::size_t i = 0; i < arm_joints_.size(); ++i) {
+        arm_joints_[i] = gz::sim::Joint(model.JointByName(ecm, kGazeboArmJointNames[i]));
+        if (!arm_joints_[i].Valid(ecm)) {
+          gzerr << "[SpotApiSystem] <arm> is set, but model '" << model_name_ << "' has no joint '"
+                << kGazeboArmJointNames[i] << "'\n";
+          return;
+        }
+        arm_joints_[i].EnablePositionCheck(ecm, true);
+        arm_joints_[i].EnableVelocityCheck(ecm, true);
+      }
     }
     const auto& leg_names = spot_sim::UrdfLowerLegLinkNames();
     for (std::size_t i = 0; i < leg_names.size(); ++i) {
@@ -223,6 +247,22 @@ class SpotApiSystem : public gz::sim::System,
           velocity && !velocity->empty() ? velocity->front() : 0.0});
     }
 
+    if (robot_->config().has_arm) {
+      std::array<double, 7> q{}, dq{};
+      for (std::size_t i = 0; i < arm_joints_.size(); ++i) {
+        const auto position = arm_joints_[i].Position(ecm);
+        const auto velocity = arm_joints_[i].Velocity(ecm);
+        q[i] = position && !position->empty() ? position->front() : 0.0;
+        dq[i] = velocity && !velocity->empty() ? velocity->front() : 0.0;
+      }
+      spot_sim::ArmSample arm;
+      arm.joints = spot_sim::ArmJoints{q[0], q[1], q[2], q[3], q[4], q[5]};
+      arm.joint_velocities = spot_sim::ArmJoints{dq[0], dq[1], dq[2], dq[3], dq[4], dq[5]};
+      arm.gripper = q[6];
+      arm.gripper_velocity = dq[6];
+      snapshot_.arm = arm;  // grasp state is added by the firmware
+    }
+
     snapshot_.foot_positions_rt_body.clear();
     snapshot_.foot_contacts.clear();
     const auto body_T_world = world_T_body.Inverse();
@@ -269,6 +309,7 @@ class SpotApiSystem : public gz::sim::System,
   std::optional<gz::sim::Model> model_;
   gz::sim::Entity body_link_ = gz::sim::kNullEntity;
   std::array<gz::sim::Joint, 12> joints_;
+  std::array<gz::sim::Joint, 7> arm_joints_;  ///< sh0 .. wr1, f1x
   std::array<gz::sim::Entity, 4> lower_legs_{};
   std::optional<gz::math::Pose3d> world_T_odom_;
   std::vector<std::unique_ptr<CameraFeed>> camera_feeds_;

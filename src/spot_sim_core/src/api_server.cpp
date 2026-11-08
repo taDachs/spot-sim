@@ -17,10 +17,12 @@
 #include <bosdyn/api/estop_service.grpc.pb.h>
 #include <bosdyn/api/docking/docking_service.grpc.pb.h>
 #include <bosdyn/api/graph_nav/graph_nav_service.grpc.pb.h>
+#include <bosdyn/api/gripper_camera_param_service.grpc.pb.h>
 #include <bosdyn/api/image_service.grpc.pb.h>
 #include <bosdyn/api/spot/inverse_kinematics_service.grpc.pb.h>
 #include <bosdyn/api/lease_service.grpc.pb.h>
 #include <bosdyn/api/license_service.grpc.pb.h>
+#include <bosdyn/api/manipulation_api_service.grpc.pb.h>
 #include <bosdyn/api/power_service.grpc.pb.h>
 #include <bosdyn/api/robot_command_service.grpc.pb.h>
 #include <bosdyn/api/robot_id_service.grpc.pb.h>
@@ -85,7 +87,8 @@ class AuthServiceImpl final : public api::AuthService::Service {
 
 class DirectoryServiceImpl final : public api::DirectoryService::Service {
  public:
-  explicit DirectoryServiceImpl(Robot& robot) : robot_(robot), entries_(DefaultServiceEntries()) {}
+  explicit DirectoryServiceImpl(Robot& robot)
+      : robot_(robot), entries_(DefaultServiceEntries(robot.config().has_arm)) {}
 
   grpc::Status GetServiceEntry(grpc::ServerContext*, const api::GetServiceEntryRequest* request,
                                api::GetServiceEntryResponse* response) override {
@@ -529,6 +532,63 @@ class ImageServiceImpl final : public api::ImageService::Service {
   Robot& robot_;
 };
 
+/// The hand camera's settings: stored and reported back (they do not change
+/// the simulated image yet).
+class GripperCameraParamServiceImpl final : public api::GripperCameraParamService::Service {
+ public:
+  explicit GripperCameraParamServiceImpl(Robot& robot) : robot_(robot) {}
+
+  grpc::Status SetParams(grpc::ServerContext*, const api::GripperCameraParamRequest* request,
+                         api::GripperCameraParamResponse* response) override {
+    return Handle(robot_, request, response, [&] {
+      robot_.WithFirmware([&](Firmware& fw) { fw.gripper_camera_params.MergeFrom(request->params()); });
+    });
+  }
+
+  grpc::Status GetParams(grpc::ServerContext*, const api::GripperCameraGetParamRequest* request,
+                         api::GripperCameraGetParamResponse* response) override {
+    return Handle(robot_, request, response, [&] {
+      *response->mutable_params() = robot_.WithFirmware([&](Firmware& fw) { return fw.gripper_camera_params; });
+    });
+  }
+
+ private:
+  Robot& robot_;
+};
+
+/// Manipulation API: so far only the grasp overrides (what the robot thinks
+/// it holds).
+class ManipulationApiServiceImpl final : public api::ManipulationApiService::Service {
+ public:
+  explicit ManipulationApiServiceImpl(Robot& robot) : robot_(robot) {}
+
+  grpc::Status OverrideGrasp(grpc::ServerContext*, const api::ApiGraspOverrideRequest* request,
+                             api::ApiGraspOverrideResponse* response) override {
+    return Handle(robot_, request, response, [&] {
+      robot_.WithFirmware([&](Firmware& fw) {
+        switch (request->api_grasp_override().override_request()) {
+          case api::ApiGraspOverride::OVERRIDE_HOLDING:
+            fw.grasp.holding_item = true;
+            break;
+          case api::ApiGraspOverride::OVERRIDE_NOT_HOLDING:
+            fw.grasp.holding_item = false;
+            fw.grasp.carry_state = api::ManipulatorState::CARRY_STATE_NOT_CARRIABLE;
+            break;
+          default:
+            break;
+        }
+        const auto carry = request->carry_state_override().override_request();
+        if (request->has_carry_state_override() && carry != api::ManipulatorState::CARRY_STATE_UNKNOWN) {
+          fw.grasp.carry_state = carry;
+        }
+      });
+    });
+  }
+
+ private:
+  Robot& robot_;
+};
+
 /// Reports calls to implemented services' unimplemented methods (the
 /// generated base classes answer those with UNIMPLEMENTED).
 class UnimplementedInterceptor final : public grpc::experimental::Interceptor {
@@ -641,6 +701,11 @@ SpotApiServer::SpotApiServer(Robot& robot, const ServerConfig& config)
   services_.push_back(std::make_unique<InverseKinematicsServiceImpl>(robot));
   services_.push_back(std::make_unique<DockingServiceImpl>(robot));
   services_.push_back(std::make_unique<GraphNavServiceImpl>(robot));
+  if (robot.config().has_arm) {
+    // ArmSurfaceContactService stays unimplemented (reported when called).
+    services_.push_back(std::make_unique<GripperCameraParamServiceImpl>(robot));
+    services_.push_back(std::make_unique<ManipulationApiServiceImpl>(robot));
+  }
 
   grpc::ServerBuilder builder;
   builder.AddListeningPort(config.address, grpc::SslServerCredentials(ssl_options), &port_);

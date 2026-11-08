@@ -5,6 +5,7 @@
 #include <string>
 #include <utility>
 
+#include <bosdyn/api/gripper_camera_param.pb.h>
 #include <bosdyn/api/robot_state.pb.h>
 
 #include "spot_sim_core/commands.hpp"
@@ -25,7 +26,18 @@ struct RobotConfig {
   std::string serial_number = "SIM-0000001";
   std::string username = "user";
   std::string password = "password";
+  /// A Spot Arm with gripper is mounted.
+  bool has_arm = false;
 };
+
+/// What the robot believes about the gripper's contents (ApiGraspOverride).
+struct GraspState {
+  bool holding_item = false;
+  bosdyn::api::ManipulatorState::CarryState carry_state = bosdyn::api::ManipulatorState::CARRY_STATE_NOT_CARRIABLE;
+};
+
+/// The hand camera's settings at boot.
+bosdyn::api::GripperCameraParams DefaultGripperCameraParams();
 
 /// The robot's onboard state machines ("firmware"), guarded by Robot.
 struct Firmware {
@@ -34,6 +46,8 @@ struct Firmware {
   PowerSystem power;
   CommandSystem commands;
   LocomotionStatus locomotion;  ///< last status reported by the base
+  GraspState grasp;
+  bosdyn::api::GripperCameraParams gripper_camera_params;
 };
 
 /// The simulated robot's shared state. The simulation thread advances the
@@ -57,6 +71,9 @@ class Robot {
 
   /// Target for the locomotion base (read by the simulation each step).
   LocomotionCommand Locomotion();
+
+  /// Target for the arm (read by the simulation each step; robots with an arm).
+  ArmCommand Arm();
 
   /// Status reported by the locomotion base (written by the simulation).
   void SetLocomotionStatus(const LocomotionStatus& status);

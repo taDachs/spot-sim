@@ -13,6 +13,7 @@
 #                        run the driver's image publishers (/spot/camera/*, /spot/depth/*)
 #   POINT_CLOUDS=false   true (with IMAGES=true): the driver's depth_image_proc nodes publish
 #                        colored clouds on /spot/depth_registered/<cam>/points
+#   ARM=false            true: Spot with the Spot Arm and gripper (the driver detects it)
 #   RGB_CAMERAS=true     the driver's rgb_cameras parameter: false requests greyscale images
 #   DRIVER_ARGS          extra spot_driver.launch.py arguments (config/driver_launch.sh)
 #   SPOT_NAME, ROS_DOMAIN_ID, SPOT_USERNAME, SPOT_PASSWORD
@@ -61,7 +62,7 @@ services:
       - /dev/dri:/dev/dri
     command: >
       ros2 launch spot_sim_bringup sim.launch.py
-      world:=${WORLD:-empty} rtf:=${RTF:-1.0} cameras:=${IMAGES:-false}
+      world:=${WORLD:-empty} rtf:=${RTF:-1.0} cameras:=${IMAGES:-false} arm:=${ARM:-false}
     healthcheck:
       # Healthy once the Spot API port accepts connections.
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/443"]
@@ -133,6 +134,7 @@ services:
       IMAGES: ${IMAGES:-false}
       POINT_CLOUDS: ${POINT_CLOUDS:-false}
       RGB_CAMERAS: ${RGB_CAMERAS:-true}
+      ARM: ${ARM:-false}
     volumes:
       - ./tests:/tests:ro
       - reports:/reports:ro

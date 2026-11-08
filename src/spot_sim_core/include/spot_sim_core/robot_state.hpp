@@ -1,11 +1,13 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include <bosdyn/api/robot_state.pb.h>
 
+#include "spot_sim_core/arm.hpp"
 #include "spot_sim_core/geometry.hpp"
 #include "spot_sim_core/time.hpp"
 
@@ -19,6 +21,16 @@ struct JointSample {
   std::string name;  ///< Spot API name, e.g. "fl.hx"
   double position = 0.0;
   double velocity = 0.0;
+};
+
+/// The arm as the simulation sees it, plus the firmware's grasp bookkeeping.
+struct ArmSample {
+  ArmJoints joints;
+  ArmJoints joint_velocities;
+  double gripper = 0.0;  ///< f1x [rad]
+  double gripper_velocity = 0.0;
+  bool holding_item = false;
+  bosdyn::api::ManipulatorState::CarryState carry_state = bosdyn::api::ManipulatorState::CARRY_STATE_NOT_CARRIABLE;
 };
 
 struct EstopSample {
@@ -41,6 +53,7 @@ struct RobotSnapshot {
   std::vector<JointSample> joints;
   std::vector<Vec3> foot_positions_rt_body;  ///< fl, fr, hl, hr
   std::vector<bool> foot_contacts;           ///< fl, fr, hl, hr
+  std::optional<ArmSample> arm;              ///< robots with an arm only
 
   bosdyn::api::PowerState::MotorPowerState motor_power = bosdyn::api::PowerState::MOTOR_POWER_STATE_OFF;
   double battery_percentage = 100.0;
@@ -52,7 +65,8 @@ RobotSnapshot SittingSnapshot(RobotTime now);
 
 /// Converts a snapshot into the Spot API RobotState, including the frame tree
 /// rooted at "body" with "odom", "vision", "flat_body" and "gpe" edges, as a
-/// real Spot reports it.
+/// real Spot reports it. With an arm: its joints, ManipulatorState (whose
+/// presence tells clients the robot has an arm) and the "hand" frame.
 bosdyn::api::RobotState BuildRobotState(const RobotSnapshot& snapshot);
 
 /// Minimal robot metrics.

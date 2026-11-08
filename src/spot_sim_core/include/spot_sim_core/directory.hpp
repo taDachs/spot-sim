@@ -18,9 +18,10 @@ inline constexpr const char* kApiAuthority = "api.spot.robot";
 /// entry makes SpotWrapper retry its initialization forever. Unimplemented
 /// RPCs answer UNIMPLEMENTED.
 ///
-/// `gripper-camera-param` is deliberately absent: the C++ driver nodes infer
-/// "has arm" from its presence.
-std::vector<bosdyn::api::ServiceEntry> DefaultServiceEntries();
+/// The arm's services (`manipulation`, `arm-surface-contact`,
+/// `gripper-camera-param`) are listed only for a robot with an arm: the C++
+/// driver nodes infer "has arm" from the presence of `gripper-camera-param`.
+std::vector<bosdyn::api::ServiceEntry> DefaultServiceEntries(bool has_arm = false);
 
 std::optional<bosdyn::api::ServiceEntry> FindServiceEntry(const std::vector<bosdyn::api::ServiceEntry>& entries,
                                                           const std::string& name);

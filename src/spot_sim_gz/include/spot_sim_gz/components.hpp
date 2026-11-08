@@ -1,13 +1,16 @@
 #pragma once
 
-// Components through which SpotApiSystem (the Spot API "firmware") and a
-// locomotion base plugin talk, both attached to the robot's model entity:
+// Components through which SpotApiSystem (the Spot API "firmware") talks to
+// the plugins that move the robot, all attached to the robot's model entity:
 //
 //   SpotApiSystem --SpotLocomotionCommand--> base plugin
 //   SpotApiSystem <--SpotLocomotionStatus--- base plugin
+//   SpotApiSystem --SpotArmCommand---------> arm plugin (robots with an arm)
 //
-// Any base (kinematic, RL policy, ...) only needs this header.
+// Any base or arm implementation (kinematic, RL policy, ...) only needs this
+// header. The arm reports back through its joint positions.
 
+#include <array>
 #include <istream>
 #include <ostream>
 
@@ -15,6 +18,7 @@
 #include <gz/sim/components/Factory.hh>
 #include <gz/sim/config.hh>
 
+#include <spot_sim_core/arm.hpp>
 #include <spot_sim_core/locomotion.hpp>
 
 namespace spot_sim {
@@ -43,6 +47,18 @@ inline std::istream& operator>>(std::istream& in, LocomotionStatus& s) {
   s.state = static_cast<LocomotionState>(state);
   return in;
 }
+inline std::ostream& operator<<(std::ostream& out, const ArmCommand& c) {
+  out << c.motors_on;
+  for (const double q : c.joints.ToArray()) out << ' ' << q;
+  return out << ' ' << c.max_joint_speed << ' ' << c.gripper << ' ' << c.max_gripper_speed;
+}
+inline std::istream& operator>>(std::istream& in, ArmCommand& c) {
+  std::array<double, 6> q{};
+  in >> c.motors_on;
+  for (double& value : q) in >> value;
+  c.joints = ArmJoints::FromArray(q);
+  return in >> c.max_joint_speed >> c.gripper >> c.max_gripper_speed;
+}
 }  // namespace spot_sim
 
 namespace gz {
@@ -55,6 +71,9 @@ GZ_SIM_REGISTER_COMPONENT("spot_sim.LocomotionCommand", SpotLocomotionCommand)
 
 using SpotLocomotionStatus = Component<spot_sim::LocomotionStatus, class SpotLocomotionStatusTag>;
 GZ_SIM_REGISTER_COMPONENT("spot_sim.LocomotionStatus", SpotLocomotionStatus)
+
+using SpotArmCommand = Component<spot_sim::ArmCommand, class SpotArmCommandTag>;
+GZ_SIM_REGISTER_COMPONENT("spot_sim.ArmCommand", SpotArmCommand)
 
 }  // namespace components
 }  // namespace GZ_SIM_VERSION_NAMESPACE

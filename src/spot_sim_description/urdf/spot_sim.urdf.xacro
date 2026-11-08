@@ -1,22 +1,30 @@
 <?xml version="1.0"?>
 <!--
-  Simulated Spot: the spot_description model (legs only, no arm) plus the
-  locomotion base plugin and, optionally, the five body cameras. Converted to
-  SDF by spot_sim_bringup at launch.
+  Simulated Spot: the spot_description model plus the locomotion base plugin
+  and, optionally, the Spot Arm with its plugin and the five body cameras.
+  Converted to SDF by spot_sim_bringup at launch.
 -->
 <robot name="spot" xmlns:xacro="http://www.ros.org/wiki/xacro">
   <!-- Plugin implementing locomotion; swap for another base (e.g. an RL policy). -->
   <xacro:arg name="base_plugin" default="KinematicBaseSystem"/>
+  <!-- Spot Arm with gripper, moved by its own plugin (swappable like the base). -->
+  <xacro:arg name="arm" default="false"/>
+  <xacro:arg name="arm_plugin" default="KinematicArmSystem"/>
   <!-- Body cameras need rendering (the world's Sensors system); off by default. -->
   <xacro:arg name="cameras" default="false"/>
   <xacro:arg name="camera_rate" default="15"/>
 
   <xacro:include filename="$(find spot_description)/urdf/spot_macro.xacro"/>
-  <xacro:load_spot arm="false" feet="false" gripperless="false" tf_prefix="" include_transmissions="false"/>
+  <xacro:load_spot arm="$(arg arm)" feet="false" gripperless="false" tf_prefix="" include_transmissions="false"/>
 
   <gazebo>
     <plugin filename="$(arg base_plugin)" name="spot_sim_gz::$(arg base_plugin)"/>
   </gazebo>
+  <xacro:if value="$(arg arm)">
+    <gazebo>
+      <plugin filename="$(arg arm_plugin)" name="spot_sim_gz::$(arg arm_plugin)"/>
+    </gazebo>
+  </xacro:if>
 
   <!--
     Each Spot body camera: a visual camera (640x480, like the robot's

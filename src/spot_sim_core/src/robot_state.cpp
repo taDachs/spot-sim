@@ -2,6 +2,7 @@
 
 #include <chrono>
 
+#include "spot_sim_core/arm_kinematics.hpp"
 #include "spot_sim_core/leg_kinematics.hpp"
 
 namespace spot_sim {
@@ -92,13 +93,27 @@ bosdyn::api::RobotState BuildRobotState(const RobotSnapshot& s) {
   // Kinematics.
   auto* kin = state.mutable_kinematic_state();
   *kin->mutable_acquisition_timestamp() = stamp;
-  for (const auto& j : s.joints) {
+  const auto add_joint = [&](const std::string& name, double position, double velocity) {
     auto* joint = kin->add_joint_states();
-    joint->set_name(j.name);
-    SetDouble(joint->mutable_position(), j.position);
-    SetDouble(joint->mutable_velocity(), j.velocity);
+    joint->set_name(name);
+    SetDouble(joint->mutable_position(), position);
+    SetDouble(joint->mutable_velocity(), velocity);
     SetDouble(joint->mutable_acceleration(), 0.0);
     SetDouble(joint->mutable_load(), 0.0);
+  };
+  for (const auto& j : s.joints) {
+    add_joint(j.name, j.position, j.velocity);
+  }
+  if (s.arm) {
+    const auto q = s.arm->joints.ToArray(), dq = s.arm->joint_velocities.ToArray();
+    // kArmJointNames: sh0, sh1, hr0 (fixed, always 0), el0, el1, wr0, wr1, f1x.
+    add_joint(kArmJointNames[0], q[0], dq[0]);
+    add_joint(kArmJointNames[1], q[1], dq[1]);
+    add_joint(kArmJointNames[2], 0.0, 0.0);
+    for (std::size_t i = 2; i < q.size(); ++i) {
+      add_joint(kArmJointNames[i + 1], q[i], dq[i]);
+    }
+    add_joint(kArmJointNames[7], s.arm->gripper, s.arm->gripper_velocity);
   }
 
   // Frame tree rooted at "body", like the real robot.
@@ -110,6 +125,9 @@ bosdyn::api::RobotState BuildRobotState(const RobotSnapshot& s) {
   AddEdge(tree, "flat_body", "body", s.odom_T_body.Inverse() * odom_T_flat_body);
   // Ground plane estimate: the odom ground plane (flat ground for now).
   AddEdge(tree, "gpe", "odom", Pose{});
+  if (s.arm) {
+    AddEdge(tree, "hand", "body", ArmKinematics::BodyTHand(s.arm->joints));
+  }
 
   // Body velocity (same estimate in both frames until vision drift exists).
   const Quat vision_R_odom = s.vision_T_body.rotation * s.odom_T_body.rotation.Conjugate();
@@ -128,7 +146,17 @@ bosdyn::api::RobotState BuildRobotState(const RobotSnapshot& s) {
     foot->set_contact(contact ? bosdyn::api::FootState::CONTACT_MADE : bosdyn::api::FootState::CONTACT_LOST);
   }
 
-  // No manipulator_state: the Python driver infers "has arm" from its presence.
+  // Clients infer "has an arm" from the presence of manipulator_state.
+  if (s.arm) {
+    auto* manipulator = state.mutable_manipulator_state();
+    manipulator->set_gripper_open_percentage(ArmKinematics::GripperOpenPercentage(s.arm->gripper));
+    manipulator->set_is_gripper_holding_item(s.arm->holding_item);
+    constexpr double kStowTolerance = 0.05;  // [rad]
+    manipulator->set_stow_state(s.arm->joints.MaxDifference(ArmKinematics::Stow()) < kStowTolerance
+                                    ? bosdyn::api::ManipulatorState::STOWSTATE_STOWED
+                                    : bosdyn::api::ManipulatorState::STOWSTATE_DEPLOYED);
+    manipulator->set_carry_state(s.arm->carry_state);
+  }
   return state;
 }
 

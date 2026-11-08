@@ -14,8 +14,8 @@ bosdyn::api::ServiceEntry Entry(const std::string& name, const std::string& type
 }
 }  // namespace
 
-std::vector<bosdyn::api::ServiceEntry> DefaultServiceEntries() {
-  return {
+std::vector<bosdyn::api::ServiceEntry> DefaultServiceEntries(bool has_arm) {
+  std::vector<bosdyn::api::ServiceEntry> entries = {
       // Bootstrap services with their own authorities.
       Entry("auth", "bosdyn.api.AuthService", "auth.spot.robot", false),
       Entry("directory", "bosdyn.api.DirectoryService"),
@@ -38,6 +38,12 @@ std::vector<bosdyn::api::ServiceEntry> DefaultServiceEntries() {
       Entry("spot-check", "bosdyn.api.spot.SpotCheckService"),
       Entry("robot-mission", "bosdyn.api.mission.MissionService"),
   };
+  if (has_arm) {
+    entries.push_back(Entry("manipulation", "bosdyn.api.ManipulationApiService"));
+    entries.push_back(Entry("arm-surface-contact", "bosdyn.api.ArmSurfaceContactService"));
+    entries.push_back(Entry("gripper-camera-param", "bosdyn.api.GripperCameraParamService"));
+  }
+  return entries;
 }
 
 std::optional<bosdyn::api::ServiceEntry> FindServiceEntry(const std::vector<bosdyn::api::ServiceEntry>& entries,

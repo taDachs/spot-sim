@@ -23,6 +23,7 @@
       <password>${password}</password>
       <port>${port}</port>
       <model_name>${model_name}</model_name>
+      <arm>${arm}</arm>
     </plugin>
 
     <light type="directional" name="sun">

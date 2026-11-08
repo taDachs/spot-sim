@@ -18,7 +18,7 @@ target_include_directories(spot_sim_gz_components INTERFACE
   "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>")
 target_link_libraries(spot_sim_gz_components INTERFACE gz-sim::gz-sim spot_sim_core::spot_sim_core)
 
-foreach(plugin SpotApiSystem KinematicBaseSystem)
+foreach(plugin SpotApiSystem KinematicBaseSystem KinematicArmSystem)
   string(REGEX REPLACE "([a-z])([A-Z])" "\\1_\\2" source "${plugin}")
   string(TOLOWER "${source}" source)
   add_library(${plugin} SHARED src/${source}.cpp)

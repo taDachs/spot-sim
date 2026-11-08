@@ -11,10 +11,11 @@
 
 namespace spot_sim {
 
-/// Spot lease bookkeeping for the resource tree all-leases > body > mobility.
+/// Spot lease bookkeeping for the resource tree all-leases > body > mobility
+/// (with an arm also body > full-arm > arm, gripper).
 ///
-/// One lease covers "body" and its sub-resource "mobility": acquiring either
-/// claims both, and a body lease is valid for mobility commands. Each
+/// One lease covers "body" and all its sub-resources: acquiring any of them
+/// claims all, and a body lease is valid for mobility and arm commands. Each
 /// acquire/take starts a new sequence number, which makes every earlier lease
 /// "older". A lease nobody has used or retained for `stale_timeout` (wall
 /// time) can be acquired without taking it.
@@ -36,8 +37,11 @@ class LeaseManager {
 
   const std::string& epoch() const { return epoch_; }
 
+  /// Adds the arm's resources (full-arm, arm, gripper) to the tree.
+  void EnableArm() { has_arm_ = true; }
+
  private:
-  static bool IsKnownResource(const std::string& resource);
+  bool IsKnownResource(const std::string& resource) const;
   bool IsStale(WallTime now) const;
   bosdyn::api::Lease Grant(const std::string& resource, const std::string& client_name, WallTime now);
   bosdyn::api::Lease LeaseFor(const std::string& resource) const;
@@ -49,6 +53,7 @@ class LeaseManager {
   bosdyn::api::LeaseOwner owner_;
   std::string client_name_;
   WallTime last_used_{};
+  bool has_arm_ = false;
 };
 
 }  // namespace spot_sim

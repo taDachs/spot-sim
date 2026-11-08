@@ -14,8 +14,12 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+def flag(context: LaunchContext, name: str) -> bool:
+    return LaunchConfiguration(name).perform(context).lower() in ("true", "1")
+
+
 def cameras_enabled(context: LaunchContext) -> bool:
-    return LaunchConfiguration("cameras").perform(context).lower() in ("true", "1")
+    return flag(context, "cameras")
 
 
 # Rendering for camera sensors (headless EGL in the server).
@@ -31,6 +35,8 @@ def render_robot(context: LaunchContext, model_name: str) -> str:
         xacro_file,
         mappings={
             "base_plugin": LaunchConfiguration("base_plugin").perform(context),
+            "arm": str(flag(context, "arm")).lower(),
+            "arm_plugin": LaunchConfiguration("arm_plugin").perform(context),
             "cameras": str(cameras_enabled(context)).lower(),
             "camera_rate": LaunchConfiguration("camera_rate").perform(context),
         },
@@ -68,6 +74,7 @@ def render_world(context: LaunchContext) -> str:
         username=os.environ.get("BOSDYN_CLIENT_USERNAME", "user"),
         password=os.environ.get("BOSDYN_CLIENT_PASSWORD", "password"),
         model_name=model_name,
+        arm=str(flag(context, "arm")).lower(),
         sensors_plugin=SENSORS_PLUGIN if cameras_enabled(context) else "",
         robot=render_robot(context, model_name),
     )
@@ -118,6 +125,10 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("spawn_pose", default_value="0 0 0.2 0 0 0", description="Initial pose x y z roll pitch yaw"),
             DeclareLaunchArgument(
                 "base_plugin", default_value="KinematicBaseSystem", description="Locomotion base plugin (spot_sim_gz)"
+            ),
+            DeclareLaunchArgument("arm", default_value="false", description="Mount the Spot Arm with gripper"),
+            DeclareLaunchArgument(
+                "arm_plugin", default_value="KinematicArmSystem", description="Arm plugin (spot_sim_gz)"
             ),
             DeclareLaunchArgument(
                 "cameras", default_value="false", description="Simulate the body cameras (needs rendering)"

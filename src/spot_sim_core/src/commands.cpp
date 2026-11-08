@@ -5,6 +5,7 @@
 
 #include <bosdyn/api/spot/robot_command.pb.h>
 
+#include "spot_sim_core/arm_kinematics.hpp"
 #include "spot_sim_core/stance.hpp"
 
 namespace spot_sim {
@@ -13,6 +14,10 @@ namespace api = bosdyn::api;
 
 namespace {
 constexpr std::size_t kMaxRememberedCommands = 1024;
+constexpr double kArmReachedTolerance = 0.01;      ///< [rad]
+constexpr double kStowedTolerance = 0.05;          ///< [rad], as ManipulatorState.stow_state
+constexpr double kDefaultArmSpeed = 1.0;           ///< fastest joint [rad/s]
+constexpr double kDefaultGripperSpeed = 3.0;       ///< [rad/s]
 
 /// Tightens the robot's limits with MobilityParams.vel_limit.
 VelocityLimits LimitsFrom(const api::spot::MobilityParams& params) {
@@ -57,13 +62,75 @@ double Clamp(double value, double low, double high) {
 }
 }  // namespace
 
-CommandSystem::CommandSystem(std::chrono::nanoseconds settle_timeout) : settle_timeout_(settle_timeout) {}
+CommandSystem::CommandSystem(std::chrono::nanoseconds settle_timeout) : settle_timeout_(settle_timeout) {
+  arm_.joints = ArmKinematics::Stow();
+  arm_.gripper = ArmKinematics::kGripperClosed;
+}
+
+CommandSystem::Record* CommandSystem::Find(std::optional<uint32_t> id) {
+  if (!id) {
+    return nullptr;
+  }
+  const auto it = records_.find(*id);
+  return it == records_.end() ? nullptr : &it->second;
+}
 
 void CommandSystem::OverrideActive() {
-  if (active_) {
-    records_[*active_].overridden = true;
-    active_.reset();
+  if (Record* record = Find(active_)) {
+    record->overridden = true;
   }
+  active_.reset();
+}
+
+void CommandSystem::OverrideArm() {
+  if (Record* record = Find(active_arm_); record && record->arm) {
+    record->arm->overridden = true;
+  }
+  active_arm_.reset();
+  active_named_.reset();
+}
+
+void CommandSystem::OverrideGripper() {
+  if (Record* record = Find(active_gripper_); record && record->gripper) {
+    record->gripper->overridden = true;
+  }
+  active_gripper_.reset();
+}
+
+void CommandSystem::HoldArm() {
+  OverrideArm();
+  if (measured_arm_) {
+    arm_.joints = measured_arm_->joints;
+  }
+}
+
+void CommandSystem::HoldGripper() {
+  OverrideGripper();
+  if (measured_arm_) {
+    arm_.gripper = measured_arm_->gripper;
+  }
+}
+
+void CommandSystem::StowArm() {
+  if (!has_arm_ || active_named_ == api::NamedArmPositionsCommand::POSITIONS_STOW) {
+    return;
+  }
+  OverrideArm();
+  arm_.joints = ArmKinematics::Stow();
+  arm_.max_joint_speed = kDefaultArmSpeed;
+}
+
+bool CommandSystem::ArmStowed() const {
+  return !has_arm_ || (measured_arm_ && measured_arm_->joints.MaxDifference(ArmKinematics::Stow()) < kStowedTolerance);
+}
+
+uint32_t CommandSystem::NewRecord() {
+  const uint32_t id = next_id_++;
+  records_[id] = Record{};
+  while (records_.size() > kMaxRememberedCommands) {
+    records_.erase(records_.begin());
+  }
+  return id;
 }
 
 uint32_t CommandSystem::Issue(Kind kind, LocomotionMode mode) {
@@ -75,12 +142,15 @@ uint32_t CommandSystem::Issue(Kind kind, LocomotionMode mode) {
   locomotion_.max_accel_y = defaults.max_accel_y;
   locomotion_.max_accel_rot = defaults.max_accel_rot;
   ++locomotion_.sequence;
-  const uint32_t id = next_id_++;
-  records_[id] = Record{kind, locomotion_.sequence};
-  while (records_.size() > kMaxRememberedCommands) {
-    records_.erase(records_.begin());
-  }
+  const uint32_t id = NewRecord();
+  Record& record = records_[id];
+  record.has_body = true;
+  record.kind = kind;
+  record.sequence = locomotion_.sequence;
   active_ = id;
+  if (mode == LocomotionMode::kSit) {
+    StowArm();  // the robot stows its arm before sitting down
+  }
   return id;
 }
 
@@ -107,6 +177,8 @@ api::RobotCommandResponse CommandSystem::Command(const api::RobotCommandRequest&
   if (command.has_full_body_command()) {
     const auto& full_body = command.full_body_command();
     if (full_body.has_stop_request()) {
+      HoldArm();
+      HoldGripper();
       return accept(Kind::kFullBodyStop, LocomotionMode::kStop);
     }
     if (full_body.has_safe_power_off_request()) {
@@ -133,42 +205,156 @@ api::RobotCommandResponse CommandSystem::Command(const api::RobotCommandRequest&
 
   if (command.has_synchronized_command()) {
     const auto& sync = command.synchronized_command();
-    if (sync.has_arm_command() || sync.has_gripper_command()) {
+    const bool arm_part = sync.has_arm_command();
+    const bool gripper_part = sync.has_gripper_command();
+    if ((arm_part || gripper_part) && !has_arm_) {
       return reject(api::RobotCommandResponse::STATUS_UNSUPPORTED, "this robot has no arm");
     }
-    if (!sync.has_mobility_command()) {
+    if (!sync.has_mobility_command() && !arm_part && !gripper_part) {
       return reject(api::RobotCommandResponse::STATUS_INVALID_REQUEST, "empty synchronized command");
     }
-    const auto& mobility = sync.mobility_command();
-    if (mobility.has_stop_request()) {
-      return accept(Kind::kMobilityStop, LocomotionMode::kStop);
+    // Check every part before executing any.
+    if (arm_part) {
+      if (const auto error = CheckArm(sync.arm_command())) {
+        return reject(api::RobotCommandResponse::STATUS_UNSUPPORTED, error->c_str());
+      }
     }
-    if (!motors_on) {
+    if (gripper_part) {
+      if (const auto error = CheckGripper(sync.gripper_command())) {
+        return reject(api::RobotCommandResponse::STATUS_INVALID_REQUEST, error->c_str());
+      }
+    }
+    if ((arm_part || gripper_part) && !motors_on) {
       return reject(api::RobotCommandResponse::STATUS_NOT_POWERED_ON, "motors are off");
     }
-    api::spot::MobilityParams params;
-    if (mobility.has_params() && !mobility.params().UnpackTo(&params)) {
-      return reject(api::RobotCommandResponse::STATUS_INVALID_REQUEST, "params is not a spot.MobilityParams");
+
+    uint32_t id = 0;
+    if (sync.has_mobility_command()) {
+      response = Mobility(sync.mobility_command(), motors_on, clock_synced, now, odom_yaw, std::move(response));
+      if (response.status() != api::RobotCommandResponse::STATUS_OK) {
+        return response;
+      }
+      id = response.robot_command_id();
+    } else {
+      id = NewRecord();
+      response.set_robot_command_id(id);
+      response.set_status(api::RobotCommandResponse::STATUS_OK);
     }
-    // Locomotion hints and stairs mode are accepted; the kinematic base walks
-    // the same way regardless.
-    if (mobility.has_stand_request()) {
-      auto accepted = accept(Kind::kStand, LocomotionMode::kStand);
-      SetPosture(PostureFrom(params));
-      return accepted;
+    if (arm_part) {
+      StartArm(id, sync.arm_command());
     }
-    if (mobility.has_sit_request()) {
-      auto accepted = accept(Kind::kSit, LocomotionMode::kSit);
-      SetPosture({});
-      return accepted;
+    if (gripper_part) {
+      StartGripper(id, sync.gripper_command());
     }
-    if (mobility.has_se2_velocity_request()) {
-      return Velocity(mobility.se2_velocity_request(), params, clock_synced, now, odom_yaw, std::move(response));
-    }
-    return reject(api::RobotCommandResponse::STATUS_UNSUPPORTED, "mobility command not simulated yet");
+    return response;
   }
 
   return reject(api::RobotCommandResponse::STATUS_INVALID_REQUEST, "empty command");
+}
+
+api::RobotCommandResponse CommandSystem::Mobility(const api::MobilityCommand::Request& mobility, bool motors_on,
+                                                  bool clock_synced, RobotTime now, double odom_yaw,
+                                                  api::RobotCommandResponse response) {
+  const auto reject = [&](api::RobotCommandResponse::Status status, const char* message) {
+    response.set_status(status);
+    response.set_message(message);
+    return response;
+  };
+  const auto accept = [&](Kind kind, LocomotionMode mode) {
+    response.set_robot_command_id(Issue(kind, mode));
+    response.set_status(api::RobotCommandResponse::STATUS_OK);
+    return response;
+  };
+  if (mobility.has_stop_request()) {
+    return accept(Kind::kMobilityStop, LocomotionMode::kStop);
+  }
+  if (!motors_on) {
+    return reject(api::RobotCommandResponse::STATUS_NOT_POWERED_ON, "motors are off");
+  }
+  api::spot::MobilityParams params;
+  if (mobility.has_params() && !mobility.params().UnpackTo(&params)) {
+    return reject(api::RobotCommandResponse::STATUS_INVALID_REQUEST, "params is not a spot.MobilityParams");
+  }
+  // Locomotion hints and stairs mode are accepted; the kinematic base walks
+  // the same way regardless.
+  if (mobility.has_stand_request()) {
+    auto accepted = accept(Kind::kStand, LocomotionMode::kStand);
+    SetPosture(PostureFrom(params));
+    return accepted;
+  }
+  if (mobility.has_sit_request()) {
+    auto accepted = accept(Kind::kSit, LocomotionMode::kSit);
+    SetPosture({});
+    return accepted;
+  }
+  if (mobility.has_se2_velocity_request()) {
+    return Velocity(mobility.se2_velocity_request(), params, clock_synced, now, odom_yaw, std::move(response));
+  }
+  return reject(api::RobotCommandResponse::STATUS_UNSUPPORTED, "mobility command not simulated yet");
+}
+
+std::optional<std::string> CommandSystem::CheckArm(const api::ArmCommand::Request& request) {
+  if (request.has_named_arm_position_command()) {
+    if (request.named_arm_position_command().position() == api::NamedArmPositionsCommand::POSITIONS_UNKNOWN) {
+      return "named_arm_position_command needs a position";
+    }
+    return std::nullopt;
+  }
+  if (request.has_arm_stop_command()) {
+    return std::nullopt;
+  }
+  return "arm command not simulated yet";
+}
+
+std::optional<std::string> CommandSystem::CheckGripper(const api::GripperCommand::Request& request) {
+  if (!request.has_claw_gripper_command()) {
+    return "gripper command not simulated";
+  }
+  if (request.claw_gripper_command().trajectory().points().empty()) {
+    return "claw_gripper_command needs a trajectory point";
+  }
+  return std::nullopt;
+}
+
+void CommandSystem::StartArm(uint32_t id, const api::ArmCommand::Request& request) {
+  OverrideArm();
+  ArmPart part;
+  if (request.has_named_arm_position_command()) {
+    const auto position = request.named_arm_position_command().position();
+    part.kind = ArmKind::kNamed;
+    active_named_ = position;
+    switch (position) {
+      case api::NamedArmPositionsCommand::POSITIONS_STOW:
+        arm_.joints = ArmKinematics::Stow();
+        break;
+      case api::NamedArmPositionsCommand::POSITIONS_READY:
+        arm_.joints = ArmKinematics::Ready();
+        break;
+      default:  // CheckArm() rejected UNKNOWN
+        arm_.joints = ArmKinematics::Carry();
+        break;
+    }
+    arm_.max_joint_speed = kDefaultArmSpeed;
+  } else {  // arm_stop_command
+    part.kind = ArmKind::kStop;
+    if (measured_arm_) {
+      arm_.joints = measured_arm_->joints;
+    }
+  }
+  records_[id].arm = part;
+  active_arm_ = id;
+}
+
+void CommandSystem::StartGripper(uint32_t id, const api::GripperCommand::Request& request) {
+  OverrideGripper();
+  const auto& claw = request.claw_gripper_command();
+  // The trajectory's final angle; the gripper moves there at its speed limit.
+  arm_.gripper = ArmKinematics::ClampedGripper(claw.trajectory().points().rbegin()->point());
+  arm_.max_gripper_speed = claw.has_maximum_open_close_velocity() && claw.maximum_open_close_velocity().value() > 0.0
+                               ? std::min(kDefaultGripperSpeed, claw.maximum_open_close_velocity().value())
+                               : kDefaultGripperSpeed;
+  records_[id].gripper = GripperPart{};
+  active_gripper_ = id;
 }
 
 void CommandSystem::SetPosture(const BodyPosture& posture) {
@@ -242,89 +428,113 @@ api::RobotCommandFeedbackResponse CommandSystem::Feedback(const api::RobotComman
     return response;
   }
   const Record& record = it->second;
-  const auto processing =
-      record.overridden ? api::RobotCommandFeedbackStatus::STATUS_COMMAND_OVERRIDDEN
-                        : api::RobotCommandFeedbackStatus::STATUS_PROCESSING;
+  const auto processing_unless = [](bool overridden) {
+    return overridden ? api::RobotCommandFeedbackStatus::STATUS_COMMAND_OVERRIDDEN
+                      : api::RobotCommandFeedbackStatus::STATUS_PROCESSING;
+  };
+  const auto processing = processing_unless(record.overridden);
 
   auto* feedback = response.mutable_feedback();
-  switch (record.kind) {
-    case Kind::kStand: {
-      auto* mobility = feedback->mutable_synchronized_feedback()->mutable_mobility_command_feedback();
-      mobility->set_status(processing);
-      auto* stand = mobility->mutable_stand_feedback();
-      stand->set_status(Reached(record, status, LocomotionState::kStanding)
-                            ? api::StandCommand::Feedback::STATUS_IS_STANDING
-                            : api::StandCommand::Feedback::STATUS_IN_PROGRESS);
-      stand->set_standing_state(api::StandCommand::Feedback::STANDING_CONTROLLED);
-      break;
+  if (record.has_body) {
+    switch (record.kind) {
+      case Kind::kStand: {
+        auto* mobility = feedback->mutable_synchronized_feedback()->mutable_mobility_command_feedback();
+        mobility->set_status(processing);
+        auto* stand = mobility->mutable_stand_feedback();
+        stand->set_status(Reached(record, status, LocomotionState::kStanding)
+                              ? api::StandCommand::Feedback::STATUS_IS_STANDING
+                              : api::StandCommand::Feedback::STATUS_IN_PROGRESS);
+        stand->set_standing_state(api::StandCommand::Feedback::STANDING_CONTROLLED);
+        break;
+      }
+      case Kind::kSit: {
+        auto* mobility = feedback->mutable_synchronized_feedback()->mutable_mobility_command_feedback();
+        mobility->set_status(processing);
+        mobility->mutable_sit_feedback()->set_status(Reached(record, status, LocomotionState::kSitting) && ArmStowed()
+                                                         ? api::SitCommand::Feedback::STATUS_IS_SITTING
+                                                         : api::SitCommand::Feedback::STATUS_IN_PROGRESS);
+        break;
+      }
+      case Kind::kMobilityStop: {
+        auto* mobility = feedback->mutable_synchronized_feedback()->mutable_mobility_command_feedback();
+        mobility->set_status(processing);
+        mobility->mutable_stop_feedback();
+        break;
+      }
+      case Kind::kVelocity: {
+        auto* mobility = feedback->mutable_synchronized_feedback()->mutable_mobility_command_feedback();
+        mobility->set_status(record.timed_out ? api::RobotCommandFeedbackStatus::STATUS_COMMAND_TIMED_OUT : processing);
+        mobility->mutable_se2_velocity_feedback();
+        break;
+      }
+      case Kind::kFullBodyStop: {
+        auto* full_body = feedback->mutable_full_body_feedback();
+        full_body->set_status(processing);
+        full_body->mutable_stop_feedback();
+        break;
+      }
+      case Kind::kSelfRight: {
+        auto* full_body = feedback->mutable_full_body_feedback();
+        full_body->set_status(processing);
+        full_body->mutable_selfright_feedback()->set_status(Reached(record, status, LocomotionState::kSitting)
+                                                               ? api::SelfRightCommand::Feedback::STATUS_COMPLETED
+                                                               : api::SelfRightCommand::Feedback::STATUS_IN_PROGRESS);
+        break;
+      }
+      case Kind::kSafePowerOff: {
+        auto* full_body = feedback->mutable_full_body_feedback();
+        full_body->set_status(record.done ? api::RobotCommandFeedbackStatus::STATUS_PROCESSING : processing);
+        full_body->mutable_safe_power_off_feedback()->set_status(
+            record.done ? api::SafePowerOffCommand::Feedback::STATUS_POWERED_OFF
+                        : api::SafePowerOffCommand::Feedback::STATUS_IN_PROGRESS);
+        break;
+      }
     }
-    case Kind::kSit: {
-      auto* mobility = feedback->mutable_synchronized_feedback()->mutable_mobility_command_feedback();
-      mobility->set_status(processing);
-      mobility->mutable_sit_feedback()->set_status(Reached(record, status, LocomotionState::kSitting)
-                                                       ? api::SitCommand::Feedback::STATUS_IS_SITTING
-                                                       : api::SitCommand::Feedback::STATUS_IN_PROGRESS);
-      break;
+  }
+  if (record.arm) {
+    auto* arm = feedback->mutable_synchronized_feedback()->mutable_arm_command_feedback();
+    arm->set_status(processing_unless(record.arm->overridden));
+    switch (record.arm->kind) {
+      case ArmKind::kNamed:
+        arm->mutable_named_arm_position_feedback()->set_status(
+            record.arm->reached ? api::NamedArmPositionsCommand::Feedback::STATUS_COMPLETE
+                                : api::NamedArmPositionsCommand::Feedback::STATUS_IN_PROGRESS);
+        break;
+      case ArmKind::kStop:
+        arm->mutable_arm_stop_feedback();
+        break;
     }
-    case Kind::kMobilityStop: {
-      auto* mobility = feedback->mutable_synchronized_feedback()->mutable_mobility_command_feedback();
-      mobility->set_status(processing);
-      mobility->mutable_stop_feedback();
-      break;
-    }
-    case Kind::kVelocity: {
-      auto* mobility = feedback->mutable_synchronized_feedback()->mutable_mobility_command_feedback();
-      mobility->set_status(record.timed_out ? api::RobotCommandFeedbackStatus::STATUS_COMMAND_TIMED_OUT : processing);
-      mobility->mutable_se2_velocity_feedback();
-      break;
-    }
-    case Kind::kFullBodyStop: {
-      auto* full_body = feedback->mutable_full_body_feedback();
-      full_body->set_status(processing);
-      full_body->mutable_stop_feedback();
-      break;
-    }
-    case Kind::kSelfRight: {
-      auto* full_body = feedback->mutable_full_body_feedback();
-      full_body->set_status(processing);
-      full_body->mutable_selfright_feedback()->set_status(Reached(record, status, LocomotionState::kSitting)
-                                                             ? api::SelfRightCommand::Feedback::STATUS_COMPLETED
-                                                             : api::SelfRightCommand::Feedback::STATUS_IN_PROGRESS);
-      break;
-    }
-    case Kind::kSafePowerOff: {
-      auto* full_body = feedback->mutable_full_body_feedback();
-      full_body->set_status(record.done ? api::RobotCommandFeedbackStatus::STATUS_PROCESSING : processing);
-      full_body->mutable_safe_power_off_feedback()->set_status(
-          record.done ? api::SafePowerOffCommand::Feedback::STATUS_POWERED_OFF
-                      : api::SafePowerOffCommand::Feedback::STATUS_IN_PROGRESS);
-      break;
-    }
+  }
+  if (record.gripper) {
+    auto* gripper = feedback->mutable_synchronized_feedback()->mutable_gripper_command_feedback();
+    gripper->set_status(processing_unless(record.gripper->overridden));
+    gripper->mutable_claw_gripper_feedback()->set_status(record.gripper->reached
+                                                            ? api::ClawGripperCommand::Feedback::STATUS_AT_GOAL
+                                                            : api::ClawGripperCommand::Feedback::STATUS_IN_PROGRESS);
   }
   return response;
 }
 
 void CommandSystem::Step(RobotTime now, api::EstopStopLevel estop_level, PowerSystem& power,
-                         const LocomotionStatus& status) {
-  // Velocity commands end at their end time; the robot then stands still.
-  if (active_) {
-    Record& record = records_[*active_];
-    if (record.kind == Kind::kVelocity && now >= record.end_time) {
-      record.timed_out = true;
-      active_.reset();
-      locomotion_.mode = LocomotionMode::kStand;
-      locomotion_.v_x = locomotion_.v_y = locomotion_.v_rot = 0.0;
-    }
+                         const LocomotionStatus& status, const std::optional<ArmSample>& arm) {
+  if (arm) {
+    measured_arm_ = arm;
   }
 
-  // Safe power off: once sitting, cut motor power.
-  if (active_) {
-    Record& record = records_[*active_];
-    if (record.kind == Kind::kSafePowerOff && !record.done && power.MotorsOn() &&
-        Reached(record, status, LocomotionState::kSitting)) {
-      power.Cut();
-      record.done = true;
-    }
+  // Velocity commands end at their end time; the robot then stands still.
+  if (Record* record = Find(active_); record && record->kind == Kind::kVelocity && now >= record->end_time) {
+    record->timed_out = true;
+    active_.reset();
+    locomotion_.mode = LocomotionMode::kStand;
+    locomotion_.v_x = locomotion_.v_y = locomotion_.v_rot = 0.0;
+  }
+
+  // Safe power off: once sitting (arm stowed), cut motor power.
+  if (Record* record = Find(active_); record && record->kind == Kind::kSafePowerOff && !record->done &&
+                                      power.MotorsOn() && Reached(*record, status, LocomotionState::kSitting) &&
+                                      ArmStowed()) {
+    power.Cut();
+    record->done = true;
   }
 
   // SETTLE_THEN_CUT E-Stop: sit down, then cut (or cut after a timeout).
@@ -334,7 +544,8 @@ void CommandSystem::Step(RobotTime now, api::EstopStopLevel estop_level, PowerSy
       Issue(Kind::kSit, LocomotionMode::kSit);
       settle_sequence_ = locomotion_.sequence;
     }
-    const bool seated = status.state == LocomotionState::kSitting && status.reached_sequence >= settle_sequence_;
+    const bool seated =
+        status.state == LocomotionState::kSitting && status.reached_sequence >= settle_sequence_ && ArmStowed();
     if (seated || now - *settling_since_ >= settle_timeout_) {
       power.Cut(bosdyn::api::STATUS_ESTOPPED);
     }
@@ -343,23 +554,47 @@ void CommandSystem::Step(RobotTime now, api::EstopStopLevel estop_level, PowerSy
     settling_since_.reset();
   }
 
-  // Without motor power nothing is being executed any more.
-  if (!power.MotorsOn() && active_) {
-    Record& record = records_[*active_];
-    if (record.kind != Kind::kSafePowerOff) {
-      OverrideActive();
-    } else if (!record.done) {
-      // Power went away by other means (E-Stop); the robot is off anyway.
-      record.done = true;
+  // Arm and gripper progress.
+  if (measured_arm_) {
+    if (Record* record = Find(active_arm_); record && record->arm && !record->arm->reached &&
+                                            measured_arm_->joints.MaxDifference(arm_.joints) < kArmReachedTolerance) {
+      record->arm->reached = true;
+    }
+    if (Record* record = Find(active_gripper_); record && record->gripper && !record->gripper->reached &&
+                                                std::abs(measured_arm_->gripper - arm_.gripper) < kArmReachedTolerance) {
+      record->gripper->reached = true;
     }
   }
+
+  // Without motor power nothing is being executed any more; the arm stays
+  // where it is.
   if (!power.MotorsOn()) {
+    if (Record* record = Find(active_); record && record->kind == Kind::kSafePowerOff) {
+      // Power went away by other means (E-Stop); the robot is off anyway.
+      record->done = true;
+    } else {
+      OverrideActive();
+    }
     locomotion_.mode = LocomotionMode::kSit;
+    if (has_arm_) {
+      HoldArm();
+      HoldGripper();
+    }
   }
 }
 
 LocomotionCommand CommandSystem::Locomotion(bool motors_on) const {
   LocomotionCommand command = locomotion_;
+  command.motors_on = motors_on;
+  // Sit down only with the arm stowed; until then keep the current posture.
+  if (motors_on && command.mode == LocomotionMode::kSit && !ArmStowed()) {
+    command.mode = LocomotionMode::kStop;
+  }
+  return command;
+}
+
+ArmCommand CommandSystem::Arm(bool motors_on) const {
+  ArmCommand command = arm_;
   command.motors_on = motors_on;
   return command;
 }
