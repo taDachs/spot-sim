@@ -6,14 +6,19 @@
 // feet are read back from Gazebo by SpotApiSystem, so a physics-based base
 // (e.g. an RL policy) can replace this plugin without touching the bridge.
 //
-// Slice 3 scope: sit <-> stand transitions and collapse on power loss. The
-// legs follow joint-space interpolation between the sitting pose and the
-// IK solution for the stand height; the body height follows from the legs so
-// the feet stay on the ground.
+// Postures: sit <-> stand transitions and collapse on power loss. The legs
+// follow joint-space interpolation between the sitting pose and the IK
+// solution for the stand height; the body height follows from the legs so the
+// feet stay on the ground.
+//
+// Walking: while standing, the body velocity ramps toward the commanded
+// velocity (bounded by the command's acceleration limits) and the planar pose
+// is integrated in simulation time. The legs do not step (yet).
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <string>
 
 #include <gz/common/Console.hh>
@@ -107,7 +112,40 @@ class KinematicBaseSystem : public gz::sim::System,
   }
 
  private:
+  /// Moves `value` toward `target` by at most `max_step`.
+  static double Approach(double value, double target, double max_step) {
+    return value + std::clamp(target - value, -max_step, max_step);
+  }
+
+  bool Moving() const {
+    constexpr double kEpsilon = 1e-4;
+    return std::abs(v_x_) > kEpsilon || std::abs(v_y_) > kEpsilon || std::abs(v_rot_) > kEpsilon;
+  }
+
   void Advance(const spot_sim::LocomotionCommand& command, double dt) {
+    AdvancePosture(command, dt);
+    AdvanceVelocity(command, dt);
+  }
+
+  void AdvanceVelocity(const spot_sim::LocomotionCommand& command, double dt) {
+    if (!command.motors_on) {
+      v_x_ = v_y_ = v_rot_ = 0.0;
+      return;
+    }
+    // Walk only once fully standing; otherwise come to a stop.
+    const bool walking = command.mode == LocomotionMode::kVelocity && progress_ >= 1.0;
+    v_x_ = Approach(v_x_, walking ? command.v_x : 0.0, command.max_accel_x * dt);
+    v_y_ = Approach(v_y_, walking ? command.v_y : 0.0, command.max_accel_y * dt);
+    v_rot_ = Approach(v_rot_, walking ? command.v_rot : 0.0, command.max_accel_rot * dt);
+
+    // Integrate the planar pose (body-frame velocity, midpoint heading).
+    const double heading = yaw_ + 0.5 * v_rot_ * dt;
+    x_ += (std::cos(heading) * v_x_ - std::sin(heading) * v_y_) * dt;
+    y_ += (std::sin(heading) * v_x_ + std::cos(heading) * v_y_) * dt;
+    yaw_ = std::remainder(yaw_ + v_rot_ * dt, 2.0 * M_PI);
+  }
+
+  void AdvancePosture(const spot_sim::LocomotionCommand& command, double dt) {
     double duration = stand_duration_;
     if (!command.motors_on) {
       standing_target_ = false;
@@ -124,6 +162,11 @@ class KinematicBaseSystem : public gz::sim::System,
         case LocomotionMode::kStop:
           break;  // keep the current posture target
       }
+    }
+    // Come to a stop before sitting down.
+    stopping_first_ = command.motors_on && !standing_target_ && Moving();
+    if (stopping_first_) {
+      standing_target_ = true;
     }
     const double step = dt / std::max(duration, 1e-3);
     progress_ = standing_target_ ? std::min(1.0, progress_ + step) : std::max(0.0, progress_ - step);
@@ -151,13 +194,13 @@ class KinematicBaseSystem : public gz::sim::System,
   spot_sim::LocomotionStatus Status(const spot_sim::LocomotionCommand& command) {
     spot_sim::LocomotionStatus status;
     if (progress_ >= 1.0) {
-      status.state = LocomotionState::kStanding;
+      status.state = Moving() ? LocomotionState::kMoving : LocomotionState::kStanding;
     } else if (progress_ <= 0.0) {
       status.state = LocomotionState::kSitting;
     } else {
       status.state = LocomotionState::kTransitioning;
     }
-    const bool at_target = standing_target_ ? progress_ >= 1.0 : progress_ <= 0.0;
+    const bool at_target = !stopping_first_ && (standing_target_ ? progress_ >= 1.0 : progress_ <= 0.0);
     if (at_target) {
       reached_sequence_ = command.sequence;
     }
@@ -175,8 +218,10 @@ class KinematicBaseSystem : public gz::sim::System,
   LegKinematics::Angles stand_;
 
   double x_ = 0.0, y_ = 0.0, yaw_ = 0.0;
+  double v_x_ = 0.0, v_y_ = 0.0, v_rot_ = 0.0;  ///< body-frame velocity
   double progress_ = 0.0;  ///< 0 = sitting, 1 = standing
   bool standing_target_ = false;
+  bool stopping_first_ = false;  ///< asked to sit while still walking
   uint32_t reached_sequence_ = 0;
 };
 

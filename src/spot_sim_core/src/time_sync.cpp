@@ -51,14 +51,17 @@ void TimeSyncEstimator::AddRoundTrip(const bosdyn::api::TimeSyncRoundTrip& rt) {
     skew = std::chrono::nanoseconds{0};
   }
 
-  const bool consistent = run_count_ > 0 && Abs(skew - run_skew_) <= params_.tolerance;
+  // Compare with the previous sample rather than the start of the run: a
+  // client on wall time sees a steadily drifting skew whenever the
+  // simulation does not run at real time, which is fine; a jump is not.
+  const bool consistent = run_count_ > 0 && Abs(skew - last_skew_) <= params_.tolerance;
   if (!consistent) {
-    // First sample, a drifting clock (e.g. stuck at 0) or a discontinuity:
-    // start a new consistent run.
+    // First sample, or a discontinuity (e.g. the client clock switched from
+    // wall to simulation time): start a new consistent run.
     Reset();
     run_start_ = server_rx;
-    run_skew_ = skew;
   }
+  last_skew_ = skew;
   ++run_count_;
   samples_.push_back(Sample{round_trip, skew});
   while (samples_.size() > params_.window) {
@@ -77,9 +80,14 @@ bosdyn::api::TimeSyncState TimeSyncEstimator::State(RobotTime now) const {
     return state;
   }
   // Best estimate: the sample with the shortest round trip has the least
-  // asymmetric delay.
-  const auto best = std::min_element(samples_.begin(), samples_.end(),
-                                     [](const Sample& a, const Sample& b) { return a.round_trip < b.round_trip; });
+  // asymmetric delay. Among equals take the newest, which tracks a drifting
+  // skew best.
+  auto best = samples_.begin();
+  for (auto it = samples_.begin(); it != samples_.end(); ++it) {
+    if (it->round_trip <= best->round_trip) {
+      best = it;
+    }
+  }
   *state.mutable_best_estimate()->mutable_round_trip_time() = ToDuration(best->round_trip);
   *state.mutable_best_estimate()->mutable_clock_skew() = ToDuration(best->skew);
   state.set_status(bosdyn::api::TimeSyncState::STATUS_OK);

@@ -1,5 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <string>
+
+#include <bosdyn/api/spot/robot_command.pb.h>
+
 #include "spot_sim_core/commands.hpp"
 
 using namespace std::chrono_literals;
@@ -31,6 +36,28 @@ api::RobotCommandRequest SafePowerOff() {
   api::RobotCommandRequest request;
   request.mutable_command()->mutable_full_body_command()->mutable_safe_power_off_request();
   return request;
+}
+
+/// se2_velocity_request as the SDK builds it (synchro_velocity_command).
+api::RobotCommandRequest Velocity(double v_x, double v_y, double v_rot, spot_sim::RobotTime end_time,
+                                  const std::string& frame = "body") {
+  api::RobotCommandRequest request;
+  auto* mobility = request.mutable_command()->mutable_synchronized_command()->mutable_mobility_command();
+  auto* velocity = mobility->mutable_se2_velocity_request();
+  *velocity->mutable_end_time() = spot_sim::ToTimestamp(end_time);
+  velocity->set_se2_frame_name(frame);
+  velocity->mutable_velocity()->mutable_linear()->set_x(v_x);
+  velocity->mutable_velocity()->mutable_linear()->set_y(v_y);
+  velocity->mutable_velocity()->set_angular(v_rot);
+  velocity->mutable_slew_rate_limit()->mutable_linear()->set_x(4.0);
+  velocity->mutable_slew_rate_limit()->mutable_linear()->set_y(4.0);
+  velocity->mutable_slew_rate_limit()->set_angular(2.0);
+  mobility->mutable_params()->PackFrom(api::spot::MobilityParams{});
+  return request;
+}
+
+api::RobotCommandFeedbackStatus::Status MobilityStatus(const api::RobotCommandFeedbackResponse& response) {
+  return response.feedback().synchronized_feedback().mobility_command_feedback().status();
 }
 
 api::RobotCommandFeedbackRequest FeedbackFor(uint32_t id) {
@@ -190,4 +217,118 @@ TEST(Commands, RejectsArmAndUnsimulatedCommands) {
             api::RobotCommandResponse::STATUS_UNSUPPORTED);
   EXPECT_EQ(commands.Command(api::RobotCommandRequest{}, LeaseOk(), true, true, 0s).status(),
             api::RobotCommandResponse::STATUS_INVALID_REQUEST);
+}
+
+TEST(Commands, VelocityDrivesBaseUntilEndTime) {
+  Powered robot;
+  const auto response = robot.commands.Command(Velocity(0.5, 0.1, -0.3, 2s), LeaseOk(), true, true, 1s);
+  ASSERT_EQ(response.status(), api::RobotCommandResponse::STATUS_OK) << response.message();
+  auto locomotion = robot.commands.Locomotion(true);
+  EXPECT_EQ(locomotion.mode, LocomotionMode::kVelocity);
+  EXPECT_DOUBLE_EQ(locomotion.v_x, 0.5);
+  EXPECT_DOUBLE_EQ(locomotion.v_y, 0.1);
+  EXPECT_DOUBLE_EQ(locomotion.v_rot, -0.3);
+  // Slew rate limits from the request cap the base's acceleration.
+  EXPECT_LE(locomotion.max_accel_rot, 2.0);
+
+  const auto feedback = FeedbackFor(response.robot_command_id());
+  robot.commands.Step(1500ms, api::ESTOP_LEVEL_NONE, robot.power, robot.status);
+  EXPECT_EQ(MobilityStatus(robot.commands.Feedback(feedback, robot.status)),
+            api::RobotCommandFeedbackStatus::STATUS_PROCESSING);
+  EXPECT_TRUE(robot.commands.Feedback(feedback, robot.status)
+                  .feedback()
+                  .synchronized_feedback()
+                  .mobility_command_feedback()
+                  .has_se2_velocity_feedback());
+
+  robot.commands.Step(2s, api::ESTOP_LEVEL_NONE, robot.power, robot.status);
+  locomotion = robot.commands.Locomotion(true);
+  EXPECT_EQ(locomotion.mode, LocomotionMode::kStand);
+  EXPECT_EQ(locomotion.v_x, 0.0);
+  EXPECT_EQ(locomotion.v_rot, 0.0);
+  EXPECT_EQ(MobilityStatus(robot.commands.Feedback(feedback, robot.status)),
+            api::RobotCommandFeedbackStatus::STATUS_COMMAND_TIMED_OUT);
+}
+
+TEST(Commands, NewVelocityCommandOverridesPrevious) {
+  Powered robot;
+  const auto first = robot.commands.Command(Velocity(0.5, 0, 0, 2s), LeaseOk(), true, true, 1s);
+  const auto second = robot.commands.Command(Velocity(0.2, 0, 0, 3s), LeaseOk(), true, true, 1100ms);
+  robot.commands.Step(2500ms, api::ESTOP_LEVEL_NONE, robot.power, robot.status);
+  EXPECT_EQ(MobilityStatus(robot.commands.Feedback(FeedbackFor(first.robot_command_id()), robot.status)),
+            api::RobotCommandFeedbackStatus::STATUS_COMMAND_OVERRIDDEN);
+  EXPECT_EQ(MobilityStatus(robot.commands.Feedback(FeedbackFor(second.robot_command_id()), robot.status)),
+            api::RobotCommandFeedbackStatus::STATUS_PROCESSING);
+  EXPECT_DOUBLE_EQ(robot.commands.Locomotion(true).v_x, 0.2);
+}
+
+TEST(Commands, VelocityValidation) {
+  Powered robot;
+  EXPECT_EQ(robot.commands.Command(Velocity(0.5, 0, 0, 2s), LeaseOk(), true, /*clock_synced=*/false, 1s).status(),
+            api::RobotCommandResponse::STATUS_NO_TIMESYNC);
+  EXPECT_EQ(robot.commands.Command(Velocity(0.5, 0, 0, 1s), LeaseOk(), true, true, 1s).status(),
+            api::RobotCommandResponse::STATUS_EXPIRED);
+  EXPECT_EQ(robot.commands.Command(Velocity(0.5, 0, 0, 2s, "gpe"), LeaseOk(), true, true, 1s).status(),
+            api::RobotCommandResponse::STATUS_UNKNOWN_FRAME);
+  EXPECT_EQ(robot.commands.Command(Velocity(0.5, 0, 0, 2s), LeaseOk(), /*motors_on=*/false, true, 1s).status(),
+            api::RobotCommandResponse::STATUS_NOT_POWERED_ON);
+  auto no_end_time = Velocity(0.5, 0, 0, 2s);
+  no_end_time.mutable_command()
+      ->mutable_synchronized_command()
+      ->mutable_mobility_command()
+      ->mutable_se2_velocity_request()
+      ->clear_end_time();
+  EXPECT_EQ(robot.commands.Command(no_end_time, LeaseOk(), true, true, 1s).status(),
+            api::RobotCommandResponse::STATUS_INVALID_REQUEST);
+  // None of the rejected commands changed what the base does.
+  EXPECT_EQ(robot.commands.Locomotion(true).mode, LocomotionMode::kSit);
+}
+
+TEST(Commands, VelocityIsClampedToLimits) {
+  Powered robot;
+  const auto robot_limits = spot_sim::VelocityLimits::Robot();
+  robot.commands.Command(Velocity(10.0, -10.0, 10.0, 2s), LeaseOk(), true, true, 1s);
+  auto locomotion = robot.commands.Locomotion(true);
+  EXPECT_DOUBLE_EQ(locomotion.v_x, robot_limits.max_x);
+  EXPECT_DOUBLE_EQ(locomotion.v_y, robot_limits.min_y);
+  EXPECT_DOUBLE_EQ(locomotion.v_rot, robot_limits.max_rot);
+
+  // MobilityParams.vel_limit, as set by the driver's max_velocity service.
+  auto limited = Velocity(1.0, 0.5, -1.0, 2s);
+  api::spot::MobilityParams params;
+  auto* vel_limit = params.mutable_vel_limit();
+  vel_limit->mutable_max_vel()->mutable_linear()->set_x(0.3);
+  vel_limit->mutable_max_vel()->mutable_linear()->set_y(0.2);
+  vel_limit->mutable_max_vel()->set_angular(0.4);
+  vel_limit->mutable_min_vel()->mutable_linear()->set_x(-0.3);
+  vel_limit->mutable_min_vel()->mutable_linear()->set_y(-0.2);
+  vel_limit->mutable_min_vel()->set_angular(-0.4);
+  limited.mutable_command()->mutable_synchronized_command()->mutable_mobility_command()->mutable_params()->PackFrom(
+      params);
+  robot.commands.Command(limited, LeaseOk(), true, true, 1s);
+  locomotion = robot.commands.Locomotion(true);
+  EXPECT_DOUBLE_EQ(locomotion.v_x, 0.3);
+  EXPECT_DOUBLE_EQ(locomotion.v_y, 0.2);
+  EXPECT_DOUBLE_EQ(locomotion.v_rot, -0.4);
+}
+
+TEST(Commands, OdomFrameVelocityIsRotatedIntoBody) {
+  Powered robot;
+  // Facing +y in odom; moving along odom +y is moving forward.
+  robot.commands.Command(Velocity(0.0, 0.5, 0.0, 2s, "odom"), LeaseOk(), true, true, 1s, M_PI / 2);
+  const auto locomotion = robot.commands.Locomotion(true);
+  EXPECT_NEAR(locomotion.v_x, 0.5, 1e-12);
+  EXPECT_NEAR(locomotion.v_y, 0.0, 1e-12);
+}
+
+TEST(Commands, StopZeroesVelocity) {
+  Powered robot;
+  robot.commands.Command(Velocity(0.5, 0, 0.2, 5s), LeaseOk(), true, true, 1s);
+  api::RobotCommandRequest stop;
+  stop.mutable_command()->mutable_synchronized_command()->mutable_mobility_command()->mutable_stop_request();
+  robot.commands.Command(stop, LeaseOk(), true, true, 1100ms);
+  const auto locomotion = robot.commands.Locomotion(true);
+  EXPECT_EQ(locomotion.mode, LocomotionMode::kStop);
+  EXPECT_EQ(locomotion.v_x, 0.0);
+  EXPECT_EQ(locomotion.v_rot, 0.0);
 }

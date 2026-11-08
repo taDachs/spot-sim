@@ -22,12 +22,14 @@ namespace spot_sim {
 // GUI sync). The format is internal; only round-tripping matters.
 inline std::ostream& operator<<(std::ostream& out, const LocomotionCommand& c) {
   return out << c.motors_on << ' ' << static_cast<int>(c.mode) << ' ' << c.sequence << ' ' << c.v_x << ' ' << c.v_y
-             << ' ' << c.v_rot << ' ' << c.body_height_offset << ' ' << c.body_roll << ' ' << c.body_pitch << ' '
+             << ' ' << c.v_rot << ' ' << c.max_accel_x << ' ' << c.max_accel_y << ' ' << c.max_accel_rot << ' '
+             << c.body_height_offset << ' ' << c.body_roll << ' ' << c.body_pitch << ' '
              << c.body_yaw;
 }
 inline std::istream& operator>>(std::istream& in, LocomotionCommand& c) {
   int mode = 0;
-  in >> c.motors_on >> mode >> c.sequence >> c.v_x >> c.v_y >> c.v_rot >> c.body_height_offset >> c.body_roll >>
+  in >> c.motors_on >> mode >> c.sequence >> c.v_x >> c.v_y >> c.v_rot >> c.max_accel_x >> c.max_accel_y >>
+      c.max_accel_rot >> c.body_height_offset >> c.body_roll >>
       c.body_pitch >> c.body_yaw;
   c.mode = static_cast<LocomotionMode>(mode);
   return in;

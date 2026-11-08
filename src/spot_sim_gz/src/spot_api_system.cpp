@@ -90,7 +90,7 @@ class SpotApiSystem : public gz::sim::System,
     // The robot clock is simulation time.
     const auto now = std::chrono::duration_cast<spot_sim::RobotTime>(info.simTime);
     if (model_) {
-      ReadSnapshot(ecm);
+      ReadSnapshot(ecm, now);
       if (const auto* status = ecm.Component<components::SpotLocomotionStatus>(model_->Entity())) {
         robot_->SetLocomotionStatus(status->Data());
       }
@@ -126,7 +126,7 @@ class SpotApiSystem : public gz::sim::System,
     gzmsg << "[SpotApiSystem] found robot model '" << model_name_ << "'\n";
   }
 
-  void ReadSnapshot(const gz::sim::EntityComponentManager& ecm) {
+  void ReadSnapshot(const gz::sim::EntityComponentManager& ecm, spot_sim::RobotTime now) {
     const auto world_T_body = gz::sim::worldPose(body_link_, ecm);
     if (!world_T_odom_) {
       // Odometry starts where the robot boots: on the ground below the body,
@@ -137,6 +137,7 @@ class SpotApiSystem : public gz::sim::System,
     const auto odom_T_body = world_T_odom_->Inverse() * world_T_body;
     snapshot_.odom_T_body = ToPose(odom_T_body);
     snapshot_.vision_T_body = snapshot_.odom_T_body;
+    UpdateVelocity(odom_T_body, now);
 
     snapshot_.joints.clear();
     for (std::size_t i = 0; i < joints_.size(); ++i) {
@@ -161,6 +162,29 @@ class SpotApiSystem : public gz::sim::System,
     }
   }
 
+  /// Body velocity in odom by differencing poses over simulation time, so it
+  /// works for any base (kinematic or physics-driven).
+  void UpdateVelocity(const gz::math::Pose3d& odom_T_body, spot_sim::RobotTime now) {
+    if (previous_pose_ && now > previous_time_) {
+      const double dt = std::chrono::duration<double>(now - previous_time_).count();
+      const auto linear = (odom_T_body.Pos() - previous_pose_->Pos()) / dt;
+      // Rotation from the previous to the current orientation, in odom.
+      gz::math::Vector3d axis;
+      double angle = 0.0;
+      (odom_T_body.Rot() * previous_pose_->Rot().Inverse()).AxisAngle(axis, angle);
+      if (angle > GZ_PI) {
+        angle -= 2.0 * GZ_PI;  // q and -q are the same rotation: take the short way
+      }
+      const auto angular = axis * (angle / dt);
+      snapshot_.linear_velocity_in_odom = spot_sim::Vec3{linear.X(), linear.Y(), linear.Z()};
+      snapshot_.angular_velocity_in_odom = spot_sim::Vec3{angular.X(), angular.Y(), angular.Z()};
+    }
+    if (!previous_pose_ || now != previous_time_) {
+      previous_pose_ = odom_T_body;
+      previous_time_ = now;
+    }
+  }
+
   std::unique_ptr<spot_sim::Robot> robot_;
   std::unique_ptr<spot_sim::SpotApiServer> server_;
   spot_sim::RobotSnapshot snapshot_;
@@ -172,6 +196,8 @@ class SpotApiSystem : public gz::sim::System,
   std::array<gz::sim::Joint, 12> joints_;
   std::array<gz::sim::Entity, 4> lower_legs_{};
   std::optional<gz::math::Pose3d> world_T_odom_;
+  std::optional<gz::math::Pose3d> previous_pose_;
+  spot_sim::RobotTime previous_time_{0};
 };
 
 }  // namespace spot_sim_gz

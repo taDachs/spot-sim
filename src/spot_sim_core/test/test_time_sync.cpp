@@ -90,6 +90,24 @@ TEST(TimeSyncEstimator, WallClockClientAtRealTimeSyncs) {
   EXPECT_EQ(FromDuration(estimator.State(13s).best_estimate().clock_skew()), -wall_offset);
 }
 
+TEST(TimeSyncEstimator, WallClockClientSyncsAtOtherRealTimeFactors) {
+  // Something on wall time while the simulation runs faster or slower than
+  // real time, e.g. the driver's launch file querying the robot: the skew
+  // drifts steadily. The sync must still establish and track the drift.
+  const auto wall_offset = std::chrono::seconds(1'794'000'000);
+  for (const double rtf : {0.5, 2.0}) {
+    spot_sim::TimeSyncEstimator estimator;
+    const auto skew_at = [&](RobotTime t) {
+      const auto wall = std::chrono::duration_cast<std::chrono::nanoseconds>(t / rtf) + wall_offset;
+      return t - wall;
+    };
+    Feed(estimator, 10s, 3s, skew_at);
+    ASSERT_TRUE(estimator.IsSynced()) << "rtf " << rtf;
+    const auto estimate = FromDuration(estimator.State(13s).best_estimate().clock_skew());
+    EXPECT_LT(std::chrono::abs(estimate - skew_at(13s)), 20ms) << "rtf " << rtf;
+  }
+}
+
 TEST(TimeSyncEstimator, UnstartedSimClockSyncsWithZeroSkewAndStaysConsistent) {
   // A ROS node with use_sim_time before its first /clock message reads 0 (the
   // spot_ros2 Python node during its whole startup). It must still sync, and

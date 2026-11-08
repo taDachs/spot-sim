@@ -303,9 +303,10 @@ class RobotCommandServiceImpl final : public api::RobotCommandService::Service {
                             api::RobotCommandResponse* response) override {
     return Handle(robot_, request, response, [&] {
       const bool clock_synced = robot_.time_sync().IsSynced(request->clock_identifier());
+      const double odom_yaw = robot_.Snapshot().odom_T_body.rotation.Yaw();
       *response = robot_.WithFirmware([&](Firmware& fw) {
         const auto lease = fw.lease.Use(request->lease(), Robot::WallNow());
-        return fw.commands.Command(*request, lease, fw.power.MotorsOn(), clock_synced, robot_.Now());
+        return fw.commands.Command(*request, lease, fw.power.MotorsOn(), clock_synced, robot_.Now(), odom_yaw);
       });
     });
   }

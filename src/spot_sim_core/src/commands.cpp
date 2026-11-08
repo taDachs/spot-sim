@@ -1,12 +1,41 @@
 #include "spot_sim_core/commands.hpp"
 
+#include <algorithm>
+#include <cmath>
+
+#include <bosdyn/api/spot/robot_command.pb.h>
+
 namespace spot_sim {
 
 namespace api = bosdyn::api;
 
 namespace {
 constexpr std::size_t kMaxRememberedCommands = 1024;
+
+/// Tightens the robot's limits with MobilityParams.vel_limit.
+VelocityLimits LimitsFrom(const api::spot::MobilityParams& params) {
+  VelocityLimits limits = VelocityLimits::Robot();
+  if (params.has_vel_limit()) {
+    const auto& vel_limit = params.vel_limit();
+    if (vel_limit.has_max_vel()) {
+      limits.max_x = std::min(limits.max_x, vel_limit.max_vel().linear().x());
+      limits.max_y = std::min(limits.max_y, vel_limit.max_vel().linear().y());
+      limits.max_rot = std::min(limits.max_rot, vel_limit.max_vel().angular());
+    }
+    if (vel_limit.has_min_vel()) {
+      limits.min_x = std::max(limits.min_x, vel_limit.min_vel().linear().x());
+      limits.min_y = std::max(limits.min_y, vel_limit.min_vel().linear().y());
+      limits.min_rot = std::max(limits.min_rot, vel_limit.min_vel().angular());
+    }
+  }
+  return limits;
 }
+
+double Clamp(double value, double low, double high) {
+  // An inconsistent limit (min > max) stops that axis rather than throwing.
+  return low > high ? 0.0 : std::clamp(value, low, high);
+}
+}  // namespace
 
 CommandSystem::CommandSystem(std::chrono::nanoseconds settle_timeout) : settle_timeout_(settle_timeout) {}
 
@@ -19,7 +48,12 @@ void CommandSystem::OverrideActive() {
 
 uint32_t CommandSystem::Issue(Kind kind, LocomotionMode mode) {
   OverrideActive();
+  const LocomotionCommand defaults;
   locomotion_.mode = mode;
+  locomotion_.v_x = locomotion_.v_y = locomotion_.v_rot = 0.0;
+  locomotion_.max_accel_x = defaults.max_accel_x;
+  locomotion_.max_accel_y = defaults.max_accel_y;
+  locomotion_.max_accel_rot = defaults.max_accel_rot;
   ++locomotion_.sequence;
   const uint32_t id = next_id_++;
   records_[id] = Record{kind, locomotion_.sequence};
@@ -32,7 +66,7 @@ uint32_t CommandSystem::Issue(Kind kind, LocomotionMode mode) {
 
 api::RobotCommandResponse CommandSystem::Command(const api::RobotCommandRequest& request,
                                                  const api::LeaseUseResult& lease, bool motors_on,
-                                                 bool /*clock_synced*/, RobotTime /*now*/) {
+                                                 bool clock_synced, RobotTime now, double odom_yaw) {
   api::RobotCommandResponse response;
   *response.mutable_lease_use_result() = lease;
   if (lease.status() != api::LeaseUseResult::STATUS_OK) {
@@ -88,10 +122,68 @@ api::RobotCommandResponse CommandSystem::Command(const api::RobotCommandRequest&
     if (mobility.has_sit_request()) {
       return accept(Kind::kSit, LocomotionMode::kSit);
     }
+    if (mobility.has_se2_velocity_request()) {
+      return Velocity(mobility, clock_synced, now, odom_yaw, std::move(response));
+    }
     return reject(api::RobotCommandResponse::STATUS_UNSUPPORTED, "mobility command not simulated yet");
   }
 
   return reject(api::RobotCommandResponse::STATUS_INVALID_REQUEST, "empty command");
+}
+
+api::RobotCommandResponse CommandSystem::Velocity(const api::MobilityCommand::Request& mobility, bool clock_synced,
+                                                  RobotTime now, double odom_yaw, api::RobotCommandResponse response) {
+  const auto reject = [&](api::RobotCommandResponse::Status status, const char* message) {
+    response.set_status(status);
+    response.set_message(message);
+    return response;
+  };
+  const auto& request = mobility.se2_velocity_request();
+  if (!clock_synced) {
+    return reject(api::RobotCommandResponse::STATUS_NO_TIMESYNC, "clock_identifier has no established time sync");
+  }
+  if (!request.has_end_time()) {
+    return reject(api::RobotCommandResponse::STATUS_INVALID_REQUEST, "se2_velocity_request requires an end_time");
+  }
+  const RobotTime end_time = FromTimestamp(request.end_time());
+  if (end_time <= now) {
+    return reject(api::RobotCommandResponse::STATUS_EXPIRED, "end_time has already passed");
+  }
+
+  // Express the velocity in the gravity-aligned body frame.
+  const auto& frame = request.se2_frame_name();
+  double v_x = request.velocity().linear().x();
+  double v_y = request.velocity().linear().y();
+  if (frame == "odom" || frame == "vision") {
+    const double c = std::cos(odom_yaw), s = std::sin(odom_yaw);
+    const double x = c * v_x + s * v_y;
+    v_y = -s * v_x + c * v_y;
+    v_x = x;
+  } else if (frame != "body" && frame != "flat_body") {
+    return reject(api::RobotCommandResponse::STATUS_UNKNOWN_FRAME, "se2_frame_name must be body, flat_body, odom or vision");
+  }
+
+  api::spot::MobilityParams params;
+  if (mobility.has_params() && !mobility.params().UnpackTo(&params)) {
+    return reject(api::RobotCommandResponse::STATUS_INVALID_REQUEST, "params is not a spot.MobilityParams");
+  }
+  const VelocityLimits limits = LimitsFrom(params);
+
+  const uint32_t id = Issue(Kind::kVelocity, LocomotionMode::kVelocity);
+  records_[id].end_time = end_time;
+  locomotion_.v_x = Clamp(v_x, limits.min_x, limits.max_x);
+  locomotion_.v_y = Clamp(v_y, limits.min_y, limits.max_y);
+  locomotion_.v_rot = Clamp(request.velocity().angular(), limits.min_rot, limits.max_rot);
+  if (request.has_slew_rate_limit()) {
+    // Non-positive values mean "robot default".
+    const auto& slew = request.slew_rate_limit();
+    if (slew.linear().x() > 0.0) locomotion_.max_accel_x = std::min(locomotion_.max_accel_x, slew.linear().x());
+    if (slew.linear().y() > 0.0) locomotion_.max_accel_y = std::min(locomotion_.max_accel_y, slew.linear().y());
+    if (slew.angular() > 0.0) locomotion_.max_accel_rot = std::min(locomotion_.max_accel_rot, slew.angular());
+  }
+  response.set_robot_command_id(id);
+  response.set_status(api::RobotCommandResponse::STATUS_OK);
+  return response;
 }
 
 bool CommandSystem::Reached(const Record& record, const LocomotionStatus& status, LocomotionState state) {
@@ -136,6 +228,12 @@ api::RobotCommandFeedbackResponse CommandSystem::Feedback(const api::RobotComman
       mobility->mutable_stop_feedback();
       break;
     }
+    case Kind::kVelocity: {
+      auto* mobility = feedback->mutable_synchronized_feedback()->mutable_mobility_command_feedback();
+      mobility->set_status(record.timed_out ? api::RobotCommandFeedbackStatus::STATUS_COMMAND_TIMED_OUT : processing);
+      mobility->mutable_se2_velocity_feedback();
+      break;
+    }
     case Kind::kFullBodyStop: {
       auto* full_body = feedback->mutable_full_body_feedback();
       full_body->set_status(processing);
@@ -156,6 +254,17 @@ api::RobotCommandFeedbackResponse CommandSystem::Feedback(const api::RobotComman
 
 void CommandSystem::Step(RobotTime now, api::EstopStopLevel estop_level, PowerSystem& power,
                          const LocomotionStatus& status) {
+  // Velocity commands end at their end time; the robot then stands still.
+  if (active_) {
+    Record& record = records_[*active_];
+    if (record.kind == Kind::kVelocity && now >= record.end_time) {
+      record.timed_out = true;
+      active_.reset();
+      locomotion_.mode = LocomotionMode::kStand;
+      locomotion_.v_x = locomotion_.v_y = locomotion_.v_rot = 0.0;
+    }
+  }
+
   // Safe power off: once sitting, cut motor power.
   if (active_) {
     Record& record = records_[*active_];

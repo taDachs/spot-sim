@@ -25,10 +25,13 @@ namespace spot_sim {
 ///    mid-exchange),
 ///  - treats a client clock that has not started (reads ~0: use_sim_time
 ///    without /clock yet) as simulation time, i.e. skew 0,
-///  - reports OK only after the skew has been stable (within `tolerance`) for
-///    `settle_duration` of robot time, so a clock that switches from wall to
-///    simulation time right after startup is caught before sync is declared,
+///  - reports OK only after the skew has been continuous (no step larger than
+///    `tolerance` between consecutive samples) for `settle_duration` of robot
+///    time, so a clock that switches from wall to simulation time right after
+///    startup is caught before sync is declared,
 ///  - restarts estimation when a later sample's skew jumps (discontinuity).
+/// A steady drift is accepted: a client on wall time sees one whenever the
+/// simulation runs faster or slower than real time.
 class TimeSyncEstimator {
  public:
   struct Params {
@@ -63,7 +66,7 @@ class TimeSyncEstimator {
   Params params_;
   std::deque<Sample> samples_;        ///< recent consistent samples (best estimate pool)
   RobotTime run_start_{0};            ///< robot time of the first sample of the consistent run
-  std::chrono::nanoseconds run_skew_{0};  ///< skew at the start of the consistent run
+  std::chrono::nanoseconds last_skew_{0};  ///< skew of the previous sample
   std::size_t run_count_ = 0;
   bool established_ = false;
 };
