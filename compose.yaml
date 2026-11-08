@@ -114,6 +114,7 @@ services:
     command: >
       with-x11 ros2 launch /config/rviz.launch.py
       spot_name:=${SPOT_NAME:-spot} use_sim_time:=${USE_SIM_TIME:-true}
+      point_clouds:=${POINT_CLOUDS:-false}
 
   e2e:
     profiles: [test]
