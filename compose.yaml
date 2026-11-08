@@ -11,6 +11,8 @@
 #   USE_SIM_TIME=true    driver on simulation time (false only at RTF 1)
 #   IMAGES=false         true: render the five body cameras (GPU via /dev/dri) and
 #                        run the driver's image publishers (/spot/camera/*, /spot/depth/*)
+#   POINT_CLOUDS=false   true (with IMAGES=true): the driver's depth_image_proc nodes publish
+#                        colored clouds on /spot/depth_registered/<cam>/points
 #   SPOT_NAME, ROS_DOMAIN_ID, SPOT_USERNAME, SPOT_PASSWORD
 
 name: spot-sim
@@ -87,6 +89,7 @@ services:
       spot_name:=${SPOT_NAME:-spot}
       use_sim_time:=${USE_SIM_TIME:-true}
       launch_image_publishers:=${IMAGES:-false}
+      publish_point_clouds:=${POINT_CLOUDS:-false}
 
   gz-gui:
     <<: *gui
@@ -124,6 +127,7 @@ services:
       USE_SIM_TIME: ${USE_SIM_TIME:-true}
       RTF: ${RTF:-1.0}
       IMAGES: ${IMAGES:-false}
+      POINT_CLOUDS: ${POINT_CLOUDS:-false}
     volumes:
       - ./tests:/tests:ro
       - reports:/reports:ro

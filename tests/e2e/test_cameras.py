@@ -115,3 +115,48 @@ def test_camera_frames_are_in_tf(ros: RosHarness) -> None:
             assert buffer.can_transform(frame(f"{camera}_fisheye"), frame(camera), rclpy.time.Time())
     finally:
         del listener
+
+
+@pytest.mark.skipif(
+    os.environ.get("POINT_CLOUDS", "false").lower() not in ("1", "true"), reason="needs POINT_CLOUDS=true"
+)
+def test_point_clouds_put_the_ground_at_zero(ros: RosHarness) -> None:
+    """The driver's depth_image_proc clouds, moved into odom: ground points lie at z = 0."""
+    from sensor_msgs.msg import PointCloud2
+
+    buffer = Buffer()
+    listener = TransformListener(buffer, ros.node)
+    try:
+        for camera in CAMERAS:
+            cloud = ros.wait_for_message(PointCloud2, ros.topic(f"depth_registered/{camera}/points"), STARTUP_TIMEOUT_SEC)
+            assert cloud.header.frame_id == frame(f"{camera}_fisheye")
+            assert (cloud.width, cloud.height) == (WIDTH, HEIGHT)
+            offsets = {f.name: f.offset for f in cloud.fields}
+            assert {"x", "y", "z", "rgb"} <= offsets.keys()
+            raw = np.frombuffer(bytes(cloud.data), dtype=np.uint8).reshape(-1, cloud.point_step)
+            xyz = np.stack(
+                [raw[:, offsets[a] : offsets[a] + 4].copy().view(np.float32)[:, 0] for a in ("x", "y", "z")], axis=1
+            ).reshape(HEIGHT, WIDTH, 3)
+            # The bottom rows look at the ground just next to the robot.
+            ground = xyz[-20:, WIDTH // 2 - 20 : WIDTH // 2 + 20].reshape(-1, 3)
+            ground = ground[np.isfinite(ground).all(axis=1)]
+            assert len(ground) > 100, f"{camera}: no ground points"
+
+            ros.wait_until(
+                lambda: buffer.can_transform(frame("odom"), cloud.header.frame_id, rclpy.time.Time()),
+                STARTUP_TIMEOUT_SEC,
+                f"TF odom -> {cloud.header.frame_id}",
+            )
+            t = buffer.lookup_transform(frame("odom"), cloud.header.frame_id, rclpy.time.Time(), Duration()).transform
+            q = t.rotation
+            rotation = np.array(
+                [
+                    [1 - 2 * (q.y**2 + q.z**2), 2 * (q.x * q.y - q.z * q.w), 2 * (q.x * q.z + q.y * q.w)],
+                    [2 * (q.x * q.y + q.z * q.w), 1 - 2 * (q.x**2 + q.z**2), 2 * (q.y * q.z - q.x * q.w)],
+                    [2 * (q.x * q.z - q.y * q.w), 2 * (q.y * q.z + q.x * q.w), 1 - 2 * (q.x**2 + q.y**2)],
+                ]
+            )
+            in_odom = ground @ rotation.T + np.array([t.translation.x, t.translation.y, t.translation.z])
+            assert np.median(np.abs(in_odom[:, 2])) < 0.02, f"{camera}: ground at z={np.median(in_odom[:, 2]):.3f}"
+    finally:
+        del listener
