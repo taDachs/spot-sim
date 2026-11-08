@@ -19,33 +19,48 @@
   </gazebo>
 
   <!--
-    One RGB-D camera per Spot body camera, named like the Spot API's cameras
-    (SpotApiSystem serves <name>_fisheye_image, <name>_depth and
-    <name>_depth_in_visual_frame from it). Approximate mounting: the front
-    pair at the nose, cross-eyed and tilted down; one per side; one at the
-    back. Pinhole instead of fisheye optics, 640x480 like the real cameras.
+    Each Spot body camera: a visual camera (640x480, like the robot's
+    fisheye cameras but with pinhole optics) and, 3 cm to its right, a depth
+    sensor (424x240, like the robot's stereo depth). SpotApiSystem serves
+    <name>_fisheye_image, <name>_depth and <name>_depth_in_visual_frame from
+    them. Approximate mounting: the front pair at the nose, cross-eyed and
+    tilted down; one per side; one at the back.
   -->
-  <xacro:macro name="body_camera" params="name xyz rpy">
+  <xacro:macro name="body_camera" params="name x y z pitch yaw">
     <gazebo reference="body">
-      <sensor name="${name}" type="rgbd_camera">
-        <pose>${xyz} ${rpy}</pose>
-        <topic>spot_sim/camera/${name}</topic>
+      <sensor name="${name}" type="camera">
+        <pose>${x} ${y} ${z} 0 ${pitch} ${yaw}</pose>
+        <topic>spot_sim/camera/${name}/image</topic>
         <update_rate>$(arg camera_rate)</update_rate>
         <always_on>true</always_on>
         <camera>
           <horizontal_fov>1.6</horizontal_fov>
           <image><width>640</width><height>480</height><format>R8G8B8</format></image>
-          <clip><near>0.02</near><far>10.0</far></clip>
+          <clip><near>0.02</near><far>50.0</far></clip>
+        </camera>
+      </sensor>
+    </gazebo>
+    <gazebo reference="body">
+      <!-- 3 cm to the camera's right (its -y axis; pitch does not move that axis). -->
+      <sensor name="${name}_depth" type="depth_camera">
+        <pose>${x + 0.03 * sin(yaw)} ${y - 0.03 * cos(yaw)} ${z} 0 ${pitch} ${yaw}</pose>
+        <topic>spot_sim/depth/${name}/image</topic>
+        <update_rate>$(arg camera_rate)</update_rate>
+        <always_on>true</always_on>
+        <camera>
+          <horizontal_fov>1.5</horizontal_fov>
+          <image><width>424</width><height>240</height><format>R_FLOAT32</format></image>
+          <clip><near>0.1</near><far>10.0</far></clip>
         </camera>
       </sensor>
     </gazebo>
   </xacro:macro>
 
   <xacro:if value="$(arg cameras)">
-    <xacro:body_camera name="frontleft" xyz="0.45 0.045 -0.03" rpy="0 0.35 -0.25"/>
-    <xacro:body_camera name="frontright" xyz="0.45 -0.045 -0.03" rpy="0 0.35 0.25"/>
-    <xacro:body_camera name="left" xyz="-0.1 0.125 0.0" rpy="0 0.25 ${pi/2}"/>
-    <xacro:body_camera name="right" xyz="-0.1 -0.125 0.0" rpy="0 0.25 ${-pi/2}"/>
-    <xacro:body_camera name="back" xyz="-0.44 0.0 0.0" rpy="0 0.25 ${pi}"/>
+    <xacro:body_camera name="frontleft" x="0.45" y="0.045" z="-0.03" pitch="0.35" yaw="-0.25"/>
+    <xacro:body_camera name="frontright" x="0.45" y="-0.045" z="-0.03" pitch="0.35" yaw="0.25"/>
+    <xacro:body_camera name="left" x="-0.1" y="0.125" z="0.0" pitch="0.25" yaw="${pi/2}"/>
+    <xacro:body_camera name="right" x="-0.1" y="-0.125" z="0.0" pitch="0.25" yaw="${-pi/2}"/>
+    <xacro:body_camera name="back" x="-0.44" y="0.0" z="0.0" pitch="0.25" yaw="${pi}"/>
   </xacro:if>
 </robot>

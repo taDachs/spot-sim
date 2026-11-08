@@ -13,6 +13,8 @@
 #                        run the driver's image publishers (/spot/camera/*, /spot/depth/*)
 #   POINT_CLOUDS=false   true (with IMAGES=true): the driver's depth_image_proc nodes publish
 #                        colored clouds on /spot/depth_registered/<cam>/points
+#   RGB_CAMERAS=true     the driver's rgb_cameras parameter: false requests greyscale images
+#   DRIVER_ARGS          extra spot_driver.launch.py arguments (config/driver_launch.sh)
 #   SPOT_NAME, ROS_DOMAIN_ID, SPOT_USERNAME, SPOT_PASSWORD
 
 name: spot-sim
@@ -80,12 +82,13 @@ services:
       <<: *ros-env
       SPOT_IP: sim
       SPOT_CERTIFICATE: /certs/ca.crt
+      RGB_CAMERAS: ${RGB_CAMERAS:-true}
+      DRIVER_ARGS: ${DRIVER_ARGS:-}
     volumes:
       - *certs
       - ./config:/config:ro
     command: >
-      ros2 launch spot_driver spot_driver.launch.py
-      config_file:=/config/driver.yaml
+      /config/driver_launch.sh
       spot_name:=${SPOT_NAME:-spot}
       use_sim_time:=${USE_SIM_TIME:-true}
       launch_image_publishers:=${IMAGES:-false}
@@ -129,6 +132,7 @@ services:
       RTF: ${RTF:-1.0}
       IMAGES: ${IMAGES:-false}
       POINT_CLOUDS: ${POINT_CLOUDS:-false}
+      RGB_CAMERAS: ${RGB_CAMERAS:-true}
     volumes:
       - ./tests:/tests:ro
       - reports:/reports:ro

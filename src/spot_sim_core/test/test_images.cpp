@@ -12,31 +12,59 @@
 using namespace std::chrono_literals;
 namespace api = bosdyn::api;
 using spot_sim::BodyCameras;
-using spot_sim::CameraFrame;
+using spot_sim::DepthFrame;
+using spot_sim::Pose;
+using spot_sim::Quat;
+using spot_sim::VisualFrame;
 
 namespace {
-constexpr int kWidth = 8, kHeight = 6;
+constexpr int kWidth = 8, kHeight = 6;            // visual
+constexpr int kDepthWidth = 4, kDepthHeight = 3;  // depth sensor
 
-CameraFrame TestFrame(spot_sim::RobotTime stamp = 7s) {
-  CameraFrame frame;
+VisualFrame TestVisual(spot_sim::RobotTime stamp = 7s) {
+  VisualFrame frame;
   frame.stamp = stamp;
   frame.width = kWidth;
   frame.height = kHeight;
   frame.intrinsics = {5.0, 5.5, 4.0, 3.0};
   for (int i = 0; i < kWidth * kHeight; ++i) {
     frame.rgb.insert(frame.rgb.end(), {200, 100, 50});
+  }
+  return frame;
+}
+
+DepthFrame TestDepth(spot_sim::RobotTime stamp = 7s) {
+  DepthFrame frame;
+  frame.stamp = stamp;
+  frame.width = kDepthWidth;
+  frame.height = kDepthHeight;
+  frame.intrinsics = {2.5, 2.5, 2.0, 1.5};
+  for (int i = 0; i < kDepthWidth * kDepthHeight; ++i) {
     frame.depth_mm.push_back(static_cast<uint16_t>(1000 + i));
   }
   return frame;
 }
 
-const spot_sim::Pose kMount{{0.4, 0.05, -0.02}, spot_sim::Quat::FromRpy(-M_PI / 2, 0.0, -M_PI / 2)};
+const Pose kMount{{0.4, 0.05, -0.02}, Quat::FromRpy(-M_PI / 2, 0.0, -M_PI / 2)};
+// Depth sensor 2 cm to the right of the visual camera (optical x).
+const Pose kDepthMount = kMount * Pose{{0.02, 0.0, 0.0}, Quat{}};
 
 std::unique_ptr<BodyCameras> Cameras() {
   auto cameras = std::make_unique<BodyCameras>();
-  cameras->AddCamera("frontleft", kMount);
-  cameras->SetFrame("frontleft", TestFrame());
+  cameras->AddCamera("frontleft", kMount, kDepthMount);
+  cameras->SetVisualFrame("frontleft", TestVisual());
+  cameras->SetDepthFrame("frontleft", TestDepth());
   return cameras;
+}
+
+/// A fronto-parallel plane `distance` in front of a camera.
+DepthFrame Plane(int width, int height, const spot_sim::PinholeIntrinsics& k, double distance) {
+  DepthFrame frame;
+  frame.width = width;
+  frame.height = height;
+  frame.intrinsics = k;
+  frame.depth_mm.assign(static_cast<std::size_t>(width) * height, static_cast<uint16_t>(distance * 1000));
+  return frame;
 }
 
 api::GetImageRequest Request(const std::string& source, api::Image::Format format = api::Image::FORMAT_UNKNOWN,
@@ -109,7 +137,12 @@ TEST(Images, ListsThreeSourcesPerCamera) {
   EXPECT_EQ(sources["frontleft_depth"].depth_scale(), 1000.0);
   EXPECT_EQ(sources["frontleft_fisheye_image"].cols(), kWidth);
   EXPECT_EQ(sources["frontleft_fisheye_image"].pinhole().intrinsics().focal_length().y(), 5.5);
+  // The depth sensor has its own, lower resolution; registered depth has the visual one.
+  EXPECT_EQ(sources["frontleft_depth"].cols(), kDepthWidth);
+  EXPECT_EQ(sources["frontleft_depth"].pinhole().intrinsics().focal_length().x(), 2.5);
+  EXPECT_EQ(sources["frontleft_depth_in_visual_frame"].cols(), kWidth);
   EXPECT_TRUE(response.transforms_snapshot().child_to_parent_edge_map().count("frontleft_fisheye"));
+  EXPECT_TRUE(response.transforms_snapshot().child_to_parent_edge_map().count("frontleft"));
 }
 
 TEST(Images, VisualDefaultsToRgbJpeg) {
@@ -147,22 +180,69 @@ TEST(Images, GreyscaleRaw) {
   EXPECT_EQ(static_cast<uint8_t>(image.data()[0]), 124);  // 0.299*200 + 0.587*100 + 0.114*50
 }
 
-TEST(Images, DepthIsRawMillimeters) {
-  for (const std::string source : {"frontleft_depth", "frontleft_depth_in_visual_frame"}) {
-    const auto response = Get(*Cameras(), Request(source, api::Image::FORMAT_RAW));
-    ASSERT_EQ(response.status(), api::ImageResponse::STATUS_OK) << source;
-    const auto& image = response.shot().image();
-    EXPECT_EQ(image.pixel_format(), api::Image::PIXEL_FORMAT_DEPTH_U16);
-    ASSERT_EQ(image.data().size(), static_cast<std::size_t>(2 * kWidth * kHeight));
-    const auto value = [&](int i) {
-      return static_cast<uint8_t>(image.data()[2 * i]) | (static_cast<uint8_t>(image.data()[2 * i + 1]) << 8);
-    };
-    EXPECT_EQ(value(0), 1000);
-    EXPECT_EQ(value(5), 1005);
+TEST(Images, DepthIsTheDepthSensorsImage) {
+  const auto response = Get(*Cameras(), Request("frontleft_depth", api::Image::FORMAT_RAW));
+  ASSERT_EQ(response.status(), api::ImageResponse::STATUS_OK);
+  const auto& image = response.shot().image();
+  EXPECT_EQ(image.pixel_format(), api::Image::PIXEL_FORMAT_DEPTH_U16);
+  EXPECT_EQ(image.cols(), kDepthWidth);
+  EXPECT_EQ(image.rows(), kDepthHeight);
+  ASSERT_EQ(image.data().size(), static_cast<std::size_t>(2 * kDepthWidth * kDepthHeight));
+  const auto value = [&](int i) {
+    return static_cast<uint8_t>(image.data()[2 * i]) | (static_cast<uint8_t>(image.data()[2 * i + 1]) << 8);
+  };
+  EXPECT_EQ(value(0), 1000);
+  EXPECT_EQ(value(5), 1005);
+  EXPECT_EQ(response.shot().frame_name_image_sensor(), "frontleft");
+  // The depth frame hangs off the visual frame, 2 cm to its right.
+  const auto& edge = response.shot().transforms_snapshot().child_to_parent_edge_map().at("frontleft");
+  EXPECT_EQ(edge.parent_frame_name(), "frontleft_fisheye");
+  EXPECT_NEAR(edge.parent_tform_child().position().x(), 0.02, 1e-12);
+}
+
+TEST(Images, DepthInVisualFrameIsRegisteredToTheVisualImage) {
+  const auto response = Get(*Cameras(), Request("frontleft_depth_in_visual_frame", api::Image::FORMAT_RAW));
+  ASSERT_EQ(response.status(), api::ImageResponse::STATUS_OK);
+  const auto& image = response.shot().image();
+  EXPECT_EQ(image.cols(), kWidth);
+  EXPECT_EQ(image.rows(), kHeight);
+  EXPECT_EQ(image.pixel_format(), api::Image::PIXEL_FORMAT_DEPTH_U16);
+  EXPECT_EQ(response.shot().frame_name_image_sensor(), "frontleft_fisheye");
+}
+
+TEST(Images, RegisteringToTheSameCameraIsTheIdentity) {
+  const spot_sim::PinholeIntrinsics k{50.0, 50.0, 32.0, 24.0};
+  auto depth = Plane(64, 48, k, 2.0);
+  depth.depth_mm[10] = 0;     // a hole stays a hole
+  depth.depth_mm[100] = 1500;  // a nearer point stays where it is
+  const auto registered = spot_sim::RegisterDepth(depth, Pose{}, 64, 48, k);
+  EXPECT_EQ(registered.depth_mm, depth.depth_mm);
+}
+
+TEST(Images, RegistrationIntoAnOffsetHigherResolutionCamera) {
+  // Depth: 424x240 sensor; visual: 640x480, 3 cm to its left; a wall 2 m away.
+  const auto depth_k = spot_sim::PinholeIntrinsics::FromHorizontalFov(424, 240, 1.5);
+  const auto visual_k = spot_sim::PinholeIntrinsics::FromHorizontalFov(640, 480, 1.6);
+  const Pose visual_T_depth{{0.03, 0.0, 0.0}, Quat{}};
+  const auto registered = spot_sim::RegisterDepth(Plane(424, 240, depth_k, 2.0), visual_T_depth, 640, 480, visual_k);
+  ASSERT_EQ(registered.width, 640);
+  ASSERT_EQ(registered.height, 480);
+  // Where the depth sensor sees the wall, the visual image gets 2 m with no gaps.
+  int filled = 0, total = 0;
+  for (int v = 180; v < 300; ++v) {
+    for (int u = 200; u < 440; ++u) {
+      const uint16_t mm = registered.depth_mm[static_cast<std::size_t>(v) * 640 + u];
+      ++total;
+      if (mm != 0) {
+        ++filled;
+        EXPECT_EQ(mm, 2000);
+      }
+    }
   }
-  EXPECT_EQ(Get(*Cameras(), Request("frontleft_depth")).shot().frame_name_image_sensor(), "frontleft");
-  EXPECT_EQ(Get(*Cameras(), Request("frontleft_depth_in_visual_frame")).shot().frame_name_image_sensor(),
-            "frontleft_fisheye");
+  EXPECT_EQ(filled, total);
+  // The depth sensor's narrower vertical field of view leaves the visual
+  // image's top and bottom rows without depth.
+  EXPECT_EQ(registered.depth_mm[320], 0);
 }
 
 TEST(Images, RejectsWhatTheCamerasCannotProvide) {
@@ -190,13 +270,13 @@ TEST(Images, FallbackPixelFormat) {
 
 TEST(Images, WaitsForTheFirstRenderedFrame) {
   BodyCameras cameras;
-  cameras.AddCamera("back", kMount);
+  cameras.AddCamera("back", kMount, kDepthMount);
   EXPECT_EQ(cameras.GetImage(Request("back_fisheye_image"), BodyTree(), 10ms).image_responses(0).status(),
             api::ImageResponse::STATUS_SOURCE_DATA_ERROR);
 
   std::thread renderer([&] {
     std::this_thread::sleep_for(50ms);
-    cameras.SetFrame("back", TestFrame());
+    cameras.SetVisualFrame("back", TestVisual());
   });
   const auto response = cameras.GetImage(Request("back_fisheye_image"), BodyTree(), 5s);
   renderer.join();

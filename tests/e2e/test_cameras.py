@@ -23,7 +23,12 @@ pytestmark = pytest.mark.skipif(
 )
 
 CAMERAS = ["frontleft", "frontright", "left", "right", "back"]
+# Like the robot: 640x480 visual cameras, 424x240 depth sensors. Registered
+# depth (and the point clouds made from it) has the visual resolution.
 WIDTH, HEIGHT = 640, 480
+DEPTH_WIDTH, DEPTH_HEIGHT = 424, 240
+# The driver's rgb_cameras parameter (config/driver_launch.sh).
+RGB_CAMERAS = os.environ.get("RGB_CAMERAS", "true").lower() in ("1", "true")
 
 
 def frame(name: str) -> str:
@@ -53,7 +58,7 @@ def collect(ros: RosHarness, topic: str, count: int, timeout_sec: float) -> typi
 def test_rgb_image_and_camera_info(ros: RosHarness, camera: str) -> None:
     image = ros.wait_for_message(Image, ros.topic(f"camera/{camera}/image"), STARTUP_TIMEOUT_SEC)
     assert (image.width, image.height) == (WIDTH, HEIGHT)
-    assert image.encoding == "bgr8"
+    assert image.encoding == ("bgr8" if RGB_CAMERAS else "mono8")
     assert image.header.frame_id == frame(f"{camera}_fisheye")
 
     info = ros.wait_for_message(CameraInfo, ros.topic(f"camera/{camera}/camera_info"), STARTUP_TIMEOUT_SEC)
@@ -67,7 +72,7 @@ def test_rgb_image_and_camera_info(ros: RosHarness, camera: str) -> None:
 @pytest.mark.parametrize("camera", CAMERAS)
 def test_depth_images(ros: RosHarness, camera: str) -> None:
     depth = ros.wait_for_message(Image, ros.topic(f"depth/{camera}/image"), STARTUP_TIMEOUT_SEC)
-    assert (depth.width, depth.height) == (WIDTH, HEIGHT)
+    assert (depth.width, depth.height) == (DEPTH_WIDTH, DEPTH_HEIGHT)
     assert depth.header.frame_id == frame(camera)
     pixels = depth_array(depth)
     assert np.count_nonzero(pixels) > 0.1 * pixels.size, "the ground should be in view"
@@ -75,13 +80,15 @@ def test_depth_images(ros: RosHarness, camera: str) -> None:
     registered = ros.wait_for_message(Image, ros.topic(f"depth_registered/{camera}/image"), STARTUP_TIMEOUT_SEC)
     assert registered.header.frame_id == frame(f"{camera}_fisheye")
     assert (registered.width, registered.height) == (WIDTH, HEIGHT)
+    assert np.count_nonzero(depth_array(registered)) > 0.1 * WIDTH * HEIGHT, "registered depth is empty"
 
 
 def test_front_camera_sees_ground_below_and_sky_above(ros: RosHarness) -> None:
     """Checks the camera orientation: tilted down, image upright."""
     pixels = depth_array(ros.wait_for_message(Image, ros.topic("depth/frontleft/image"), STARTUP_TIMEOUT_SEC))
-    bottom = pixels[-10:, WIDTH // 2 - 10 : WIDTH // 2 + 10]
-    top = pixels[:10, WIDTH // 2 - 10 : WIDTH // 2 + 10]
+    center = pixels.shape[1] // 2
+    bottom = pixels[-10:, center - 10 : center + 10]
+    top = pixels[:10, center - 10 : center + 10]
     # Ground close below the nose (millimeters; the robot sits or stands).
     assert np.all(bottom > 100) and np.all(bottom < 2000), bottom
     # Looking up past the horizon: nothing within range (0 = no return), unless
@@ -137,8 +144,9 @@ def test_point_clouds_put_the_ground_at_zero(ros: RosHarness) -> None:
             xyz = np.stack(
                 [raw[:, offsets[a] : offsets[a] + 4].copy().view(np.float32)[:, 0] for a in ("x", "y", "z")], axis=1
             ).reshape(HEIGHT, WIDTH, 3)
-            # The bottom rows look at the ground just next to the robot.
-            ground = xyz[-20:, WIDTH // 2 - 20 : WIDTH // 2 + 20].reshape(-1, 3)
+            # Below the horizon, the ground dominates. (The depth sensor's
+            # narrower vertical field of view leaves the bottom rows empty.)
+            ground = xyz[HEIGHT // 2 :, WIDTH // 4 : 3 * WIDTH // 4].reshape(-1, 3)
             ground = ground[np.isfinite(ground).all(axis=1)]
             assert len(ground) > 100, f"{camera}: no ground points"
 

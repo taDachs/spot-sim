@@ -2,10 +2,12 @@
 // network: it serves the Spot gRPC API (spot_sim_core), feeds it the
 // simulation clock and the robot's state as Gazebo sees it, and hands the
 // resulting locomotion targets to the base plugin on the robot model.
-// RGB-D camera sensors named after Spot's body cameras (frontleft,
-// frontright, left, right, back) on the body link become image sources.
+// Camera sensors named after Spot's body cameras (frontleft, frontright,
+// left, right, back) plus depth cameras "<cam>_depth" on the body link
+// become image sources.
 
 #include <array>
+#include <map>
 #include <set>
 #include <vector>
 #include <chrono>
@@ -25,9 +27,12 @@
 #include <gz/sim/components/Name.hh>
 #include <gz/sim/components/ParentEntity.hh>
 #include <gz/sim/components/Pose.hh>
-#include <gz/sim/components/RgbdCamera.hh>
+#include <gz/sim/components/Camera.hh>
+#include <gz/sim/components/DepthCamera.hh>
 #include <gz/sim/components/Sensor.hh>
+#include <sdf/Camera.hh>
 #include <sdf/Element.hh>
+#include <sdf/Sensor.hh>
 
 #include <spot_sim_core/api_server.hpp>
 #include <spot_sim_core/leg_kinematics.hpp>
@@ -140,24 +145,58 @@ class SpotApiSystem : public gz::sim::System,
   }
 
   void FindCameras(gz::sim::EntityComponentManager& ecm) {
+    // Each Spot body camera is a visual camera "<cam>" plus a depth camera
+    // "<cam>_depth" on the body link.
     static const std::set<std::string> kBodyCameras = {"frontleft", "frontright", "left", "right", "back"};
     // Optical frame (z forward, x right, y down) of a sensor looking along +x.
     const gz::math::Pose3d sensor_T_optical(0.0, 0.0, 0.0, -GZ_PI / 2, 0.0, -GZ_PI / 2);
+    struct Found {
+      gz::math::Pose3d body_T_optical;
+      CameraFeed::Sensor sensor;
+    };
+    std::map<std::string, Found> visual, depth;
+    const auto describe = [&](gz::sim::Entity entity, const sdf::Sensor& sdf_sensor) -> std::optional<Found> {
+      const auto* pose = ecm.Component<components::Pose>(entity);
+      const auto* camera = sdf_sensor.CameraSensor();
+      if (pose == nullptr || camera == nullptr) {
+        return std::nullopt;
+      }
+      const int width = static_cast<int>(camera->ImageWidth());
+      const int height = static_cast<int>(camera->ImageHeight());
+      return Found{pose->Data() * sensor_T_optical,
+                   CameraFeed::Sensor{sdf_sensor.Topic(), spot_sim::PinholeIntrinsics::FromHorizontalFov(
+                                                              width, height, camera->HorizontalFov().Radian())}};
+    };
     for (const auto entity : ecm.ChildrenByComponents(body_link_, components::Sensor())) {
       const auto* name = ecm.Component<components::Name>(entity);
-      const auto* camera = ecm.Component<components::RgbdCamera>(entity);
-      const auto* pose = ecm.Component<components::Pose>(entity);
-      if (name == nullptr || camera == nullptr || pose == nullptr || kBodyCameras.count(name->Data()) == 0) {
+      if (name == nullptr) {
         continue;
       }
-      const std::string topic = camera->Data().Topic();
-      robot_->cameras().AddCamera(name->Data(), ToPose(pose->Data() * sensor_T_optical));
-      auto feed = std::make_unique<CameraFeed>(name->Data(), topic, robot_->cameras());
+      if (const auto* camera = ecm.Component<components::Camera>(entity); camera && kBodyCameras.count(name->Data())) {
+        if (auto found = describe(entity, camera->Data())) visual[name->Data()] = *found;
+      }
+      if (const auto* camera = ecm.Component<components::DepthCamera>(entity)) {
+        const std::string suffix = "_depth";
+        const std::string& n = name->Data();
+        if (n.size() > suffix.size() && n.compare(n.size() - suffix.size(), suffix.size(), suffix) == 0) {
+          if (auto found = describe(entity, camera->Data())) depth[n.substr(0, n.size() - suffix.size())] = *found;
+        }
+      }
+    }
+    for (const auto& [name, v] : visual) {
+      const auto d = depth.find(name);
+      if (d == depth.end()) {
+        gzerr << "[SpotApiSystem] body camera '" << name << "' has no depth sensor '" << name << "_depth'\n";
+        continue;
+      }
+      robot_->cameras().AddCamera(name, ToPose(v.body_T_optical), ToPose(d->second.body_T_optical));
+      auto feed = std::make_unique<CameraFeed>(name, v.sensor, d->second.sensor, robot_->cameras());
       if (!feed->ok()) {
-        gzerr << "[SpotApiSystem] cannot subscribe to camera '" << name->Data() << "' on " << topic << "\n";
+        gzerr << "[SpotApiSystem] cannot subscribe to body camera '" << name << "'\n";
         continue;
       }
-      gzmsg << "[SpotApiSystem] body camera '" << name->Data() << "' on " << topic << "\n";
+      gzmsg << "[SpotApiSystem] body camera '" << name << "': visual " << v.sensor.topic << ", depth "
+            << d->second.sensor.topic << "\n";
       camera_feeds_.push_back(std::move(feed));
     }
   }
