@@ -17,7 +17,8 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
-CAMERAS = ["frontleft", "frontright", "left", "right", "back"]
+# The hand camera's display stays empty on a robot without an arm.
+CAMERAS = ["frontleft", "frontright", "left", "right", "back", "hand"]
 
 
 def point_cloud_display(topic: str, name: str) -> dict:

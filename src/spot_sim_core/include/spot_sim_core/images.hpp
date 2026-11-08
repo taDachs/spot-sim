@@ -32,6 +32,9 @@ struct VisualFrame {
   int width = 0, height = 0;
   PinholeIntrinsics intrinsics;
   std::vector<uint8_t> rgb;  ///< width * height * 3, row-major, top row first
+  /// Pose of the camera's mount frame in the body frame when the image was
+  /// taken (cameras on moving mounts, e.g. the hand camera on the wrist).
+  std::optional<Pose> body_T_mount;
 };
 
 /// The latest image of a depth camera.
@@ -40,6 +43,27 @@ struct DepthFrame {
   int width = 0, height = 0;
   PinholeIntrinsics intrinsics;
   std::vector<uint16_t> depth_mm;  ///< width * height, distance along the optical axis, 0 = no return
+  std::optional<Pose> body_T_mount;  ///< as in VisualFrame
+};
+
+/// Names and mounting of one Spot camera: a visual camera plus a depth
+/// sensor next to it, both fixed to a mount frame.
+struct CameraSpec {
+  std::string visual_source, depth_source, depth_in_visual_source;
+  std::string visual_frame, depth_frame;
+  /// "body", or a moving frame (then each image carries body_T_mount).
+  std::string mount_frame = "body";
+  Pose mount_T_visual;  ///< optical frames (z forward, x right, y down)
+  Pose mount_T_depth;
+
+  /// A body camera `<cam>`: <cam>_fisheye_image / <cam>_depth /
+  /// <cam>_depth_in_visual_frame in frames <cam>_fisheye and <cam>.
+  static CameraSpec Body(const std::string& camera, const Pose& body_T_visual, const Pose& body_T_depth);
+  /// The gripper camera: hand_color_image / hand_depth /
+  /// hand_depth_in_hand_color_frame in frames hand_color_image_sensor and
+  /// hand_depth_sensor, mounted on the wrist ("arm0.link_wr1", as the robot
+  /// names it in image snapshots).
+  static CameraSpec Hand(const Pose& wrist_T_visual, const Pose& wrist_T_depth);
 };
 
 /// Depth image conversion: meters (float, inf / nan for no return) to the
@@ -58,21 +82,27 @@ DepthFrame RegisterDepth(const DepthFrame& depth, const Pose& target_T_depth, in
 /// JPEG encoding of 8-bit RGB or greyscale pixels.
 std::string EncodeJpeg(const uint8_t* pixels, int width, int height, int channels, int quality);
 
-/// ImageService semantics for Spot's body cameras. Like on the robot, each
-/// camera `<cam>` (e.g. "frontleft") pairs a visual camera with a separate
-/// depth sensor next to it:
-///   <cam>_fisheye_image          visual, RGB_U8 or GREYSCALE_U8, JPEG or RAW,
-///                                in frame "<cam>_fisheye"
-///   <cam>_depth                  depth, DEPTH_U16 RAW, in frame "<cam>"
-///   <cam>_depth_in_visual_frame  the depth registered to the visual image
-///                                (its resolution and intrinsics), in frame
-///                                "<cam>_fisheye"
+/// ImageService semantics for Spot's cameras. Like on the robot, each camera
+/// pairs a visual camera with a separate depth sensor next to it, e.g. for
+/// the body camera "frontleft":
+///   frontleft_fisheye_image          visual, RGB_U8 or GREYSCALE_U8, JPEG or
+///                                    RAW, in frame "frontleft_fisheye"
+///   frontleft_depth                  depth, DEPTH_U16 RAW, in frame "frontleft"
+///   frontleft_depth_in_visual_frame  the depth registered to the visual image
+///                                    (its resolution and intrinsics), in frame
+///                                    "frontleft_fisheye"
+/// and likewise for the hand camera (CameraSpec::Hand).
 /// Thread-safe.
 class BodyCameras {
  public:
-  /// Registers a camera. Poses are the optical frames (z forward, x right,
-  /// y down) of the visual camera and the depth sensor in the body frame.
-  void AddCamera(const std::string& name, const Pose& body_T_visual, const Pose& body_T_depth);
+  /// Registers camera `name`.
+  void AddCamera(const std::string& name, const CameraSpec& spec);
+  /// A body camera (CameraSpec::Body). Poses are the optical frames (z
+  /// forward, x right, y down) of the visual camera and the depth sensor in
+  /// the body frame.
+  void AddCamera(const std::string& name, const Pose& body_T_visual, const Pose& body_T_depth) {
+    AddCamera(name, CameraSpec::Body(name, body_T_visual, body_T_depth));
+  }
 
   /// Publish new images of `name` (ignored for unknown cameras).
   void SetVisualFrame(const std::string& name, VisualFrame frame);
@@ -93,8 +123,7 @@ class BodyCameras {
  private:
   enum class Kind { kVisual, kDepth, kDepthInVisual };
   struct Camera {
-    Pose body_T_visual;
-    Pose body_T_depth;
+    CameraSpec spec;
     // Shared so requests can encode outside the lock.
     std::shared_ptr<const VisualFrame> visual;
     std::shared_ptr<const DepthFrame> depth;
@@ -109,7 +138,9 @@ class BodyCameras {
   static bool HasData(const Camera& camera, Kind kind);
   static bosdyn::api::ImageSource DescribeSource(const std::string& source_name, const Source& source,
                                                  const Camera& camera);
-  static void AddCameraFrames(bosdyn::api::FrameTreeSnapshot* tree, const std::string& name, const Camera& camera);
+  /// Camera frames; `body_T_mount`: where a moving mount was.
+  static void AddCameraFrames(bosdyn::api::FrameTreeSnapshot* tree, const Camera& camera,
+                              const std::optional<Pose>& body_T_mount);
   static bosdyn::api::ImageResponse Respond(const Cameras& cameras, const bosdyn::api::ImageRequest& request,
                                             const bosdyn::api::FrameTreeSnapshot& body_tree);
 
@@ -118,11 +149,11 @@ class BodyCameras {
   Cameras cameras_;
 };
 
-/// Source name helpers.
+/// Body camera source names.
 std::string VisualSourceName(const std::string& camera);
 std::string DepthSourceName(const std::string& camera);
 std::string DepthInVisualSourceName(const std::string& camera);
-/// Frame names: "<cam>_fisheye" (visual) and "<cam>" (depth).
+/// Body camera frame names: "<cam>_fisheye" (visual) and "<cam>" (depth).
 std::string VisualFrameName(const std::string& camera);
 std::string DepthFrameName(const std::string& camera);
 

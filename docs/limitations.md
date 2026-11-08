@@ -39,14 +39,15 @@ Code pointers: API semantics in `src/spot_sim_core` (`api_server.cpp`,
 
 | Missing | Current behaviour | Planned |
 |---|---|---|
-| Hand camera (`hand_color_image`, `hand_depth`, `hand_depth_in_hand_color_frame`) | Not served, so the driver's hand topics stay empty | Slice 10 |
 | Grasping: `ManipulationApi` (PickObject*, WalkToObject*), `ManipulationApiFeedback` | UNIMPLEMENTED | Slice 11 (kinematic attach); WalkToObject needs the go-to base mode |
 | Arm surface contact (driver: `arm_surface_contact` action) | UNIMPLEMENTED | Not planned |
 | Arm impedance, drag, force / wrench trajectories (`force_trajectory`) | UNSUPPORTED | Not planned |
 | Arm collisions (with the body, itself, the world) | None | |
 | Hand velocity and force estimates in `ManipulatorState` | Not reported | |
 | `STATUS_STALLED_HOLDING_ITEM`, carry-state rules when stowing with an item | Not modelled | |
-| Gripper camera parameters | Stored and reported back, no effect on images | |
+| Gripper camera parameters (resolution via `camera_mode`, exposure, focus, ...) | Stored and reported back, no effect: always 640x480 | |
+| Other hand camera sources: greyscale `hand_image`, `hand_color_in_hand_depth_frame` | Not served | The driver does not use them |
+| Hand camera placement and optics | Approximations: top of the gripper's front face; ~60 deg color, 224x171 / ~80 deg time-of-flight depth | `spot_sim.urdf.xacro` |
 | Gripperless arm (`gripperless:=true`) | Not offered | Small: pass the xacro arg, drop `gripper-camera-param` |
 | Arm in `InverseKinematicsService` | Always NO_SOLUTION_FOUND | Could reuse the slice 9 IK |
 | Stow and carry poses | Approximations, not measured on a real robot (ready is the robot's) | |

@@ -1,10 +1,14 @@
 #pragma once
 
-// Feeds a Spot body camera, a Gazebo visual camera plus a depth camera next
-// to it, into spot_sim::BodyCameras: subscribes to both sensors' image
-// topics in-process and hands over every new image.
+// Feeds a Spot camera, a Gazebo visual camera plus a depth camera next to
+// it, into spot_sim::BodyCameras: subscribes to both sensors' image topics
+// in-process and hands over every new image. For cameras on a moving mount
+// (the hand camera on the wrist), each image carries the mount's pose at
+// arrival.
 
 #include <cstring>
+#include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -22,8 +26,15 @@ class CameraFeed {
     spot_sim::PinholeIntrinsics intrinsics;
   };
 
-  CameraFeed(std::string name, Sensor visual, Sensor depth, spot_sim::BodyCameras& cameras)
-      : name_(std::move(name)), visual_(std::move(visual)), depth_(std::move(depth)), cameras_(cameras) {
+  /// `mount_pose`: body_T_mount now (cameras on a moving mount only).
+  using MountPose = std::function<std::optional<spot_sim::Pose>()>;
+
+  CameraFeed(std::string name, Sensor visual, Sensor depth, spot_sim::BodyCameras& cameras, MountPose mount_pose = {})
+      : name_(std::move(name)),
+        visual_(std::move(visual)),
+        depth_(std::move(depth)),
+        cameras_(cameras),
+        mount_pose_(std::move(mount_pose)) {
     ok_ = node_.Subscribe(visual_.topic, &CameraFeed::OnVisual, this) &&
           node_.Subscribe(depth_.topic, &CameraFeed::OnDepth, this);
   }
@@ -44,6 +55,7 @@ class CameraFeed {
     frame.width = static_cast<int>(msg.width());
     frame.height = static_cast<int>(msg.height());
     frame.intrinsics = visual_.intrinsics;
+    if (mount_pose_) frame.body_T_mount = mount_pose_();
     const std::size_t row = static_cast<std::size_t>(msg.width()) * 3;
     frame.rgb.resize(row * msg.height());
     for (uint32_t y = 0; y < msg.height(); ++y) {  // drop any row padding
@@ -66,6 +78,7 @@ class CameraFeed {
     frame.width = static_cast<int>(msg.width());
     frame.height = static_cast<int>(msg.height());
     frame.intrinsics = depth_.intrinsics;
+    if (mount_pose_) frame.body_T_mount = mount_pose_();
     frame.depth_mm = spot_sim::DepthToMillimeters(meters.data(), count);
     cameras_.SetDepthFrame(name_, std::move(frame));
   }
@@ -74,6 +87,7 @@ class CameraFeed {
   Sensor visual_;
   Sensor depth_;
   spot_sim::BodyCameras& cameras_;
+  MountPose mount_pose_;
   gz::transport::Node node_;
   bool ok_ = false;
 };

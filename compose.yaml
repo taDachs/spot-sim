@@ -9,8 +9,9 @@
 #   WORLD=empty|yard     world in src/spot_sim_bringup/worlds (yard: objects around the robot)
 #   RTF=1.0              simulation speed relative to real time
 #   USE_SIM_TIME=true    driver on simulation time (false only at RTF 1)
-#   IMAGES=false         true: render the five body cameras (GPU via /dev/dri) and
-#                        run the driver's image publishers (/spot/camera/*, /spot/depth/*)
+#   IMAGES=false         true: render the five body cameras, and with ARM=true the hand camera
+#                        (GPU via /dev/dri), and run the driver's image publishers
+#                        (/spot/camera/*, /spot/depth/*)
 #   POINT_CLOUDS=false   true (with IMAGES=true): the driver's depth_image_proc nodes publish
 #                        colored clouds on /spot/depth_registered/<cam>/points
 #   ARM=false            true: Spot with the Spot Arm and gripper (the driver detects it)

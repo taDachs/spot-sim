@@ -18,10 +18,6 @@ constexpr const char* kDepthInVisualSuffix = "_depth_in_visual_frame";
 constexpr double kDepthScale = 1000.0;  // DEPTH_U16 units per meter
 constexpr int kDefaultJpegQuality = 75;
 
-bool EndsWith(const std::string& s, const std::string& suffix) {
-  return s.size() > suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
-
 /// The requested pixel format followed by the fallbacks.
 std::vector<api::Image::PixelFormat> PixelFormatPreferences(const api::ImageRequest& request) {
   std::vector<api::Image::PixelFormat> out{request.pixel_format()};
@@ -56,6 +52,31 @@ std::string DepthSourceName(const std::string& camera) { return camera + kDepthS
 std::string DepthInVisualSourceName(const std::string& camera) { return camera + kDepthInVisualSuffix; }
 std::string VisualFrameName(const std::string& camera) { return camera + "_fisheye"; }
 std::string DepthFrameName(const std::string& camera) { return camera; }
+
+CameraSpec CameraSpec::Body(const std::string& camera, const Pose& body_T_visual, const Pose& body_T_depth) {
+  CameraSpec spec;
+  spec.visual_source = VisualSourceName(camera);
+  spec.depth_source = DepthSourceName(camera);
+  spec.depth_in_visual_source = DepthInVisualSourceName(camera);
+  spec.visual_frame = VisualFrameName(camera);
+  spec.depth_frame = DepthFrameName(camera);
+  spec.mount_T_visual = body_T_visual;
+  spec.mount_T_depth = body_T_depth;
+  return spec;
+}
+
+CameraSpec CameraSpec::Hand(const Pose& wrist_T_visual, const Pose& wrist_T_depth) {
+  CameraSpec spec;
+  spec.visual_source = "hand_color_image";
+  spec.depth_source = "hand_depth";
+  spec.depth_in_visual_source = "hand_depth_in_hand_color_frame";
+  spec.visual_frame = "hand_color_image_sensor";
+  spec.depth_frame = "hand_depth_sensor";
+  spec.mount_frame = "arm0.link_wr1";
+  spec.mount_T_visual = wrist_T_visual;
+  spec.mount_T_depth = wrist_T_depth;
+  return spec;
+}
 
 PinholeIntrinsics PinholeIntrinsics::FromHorizontalFov(int width, int height, double hfov) {
   const double f = 0.5 * width / std::tan(0.5 * hfov);
@@ -166,11 +187,9 @@ std::string EncodeJpeg(const uint8_t* pixels, int width, int height, int channel
   return out;
 }
 
-void BodyCameras::AddCamera(const std::string& name, const Pose& body_T_visual, const Pose& body_T_depth) {
+void BodyCameras::AddCamera(const std::string& name, const CameraSpec& spec) {
   std::lock_guard<std::mutex> lock(mutex_);
-  auto& camera = cameras_[name];
-  camera.body_T_visual = body_T_visual;
-  camera.body_T_depth = body_T_depth;
+  cameras_[name].spec = spec;
 }
 
 void BodyCameras::SetVisualFrame(const std::string& name, VisualFrame frame) {
@@ -203,15 +222,11 @@ bool BodyCameras::HasCamera(const std::string& name) const {
 }
 
 std::optional<BodyCameras::Source> BodyCameras::ParseSource(const Cameras& cameras, const std::string& name) {
-  for (const auto& [suffix, kind] : {std::pair{kDepthInVisualSuffix, Kind::kDepthInVisual},
-                                     std::pair{kVisualSuffix, Kind::kVisual}, std::pair{kDepthSuffix, Kind::kDepth}}) {
-    if (EndsWith(name, suffix)) {
-      const std::string camera = name.substr(0, name.size() - std::string(suffix).size());
-      if (cameras.count(camera) > 0) {
-        return Source{camera, kind};
-      }
-      return std::nullopt;
-    }
+  for (const auto& [camera_name, camera] : cameras) {
+    const auto& spec = camera.spec;
+    if (name == spec.visual_source) return Source{camera_name, Kind::kVisual};
+    if (name == spec.depth_source) return Source{camera_name, Kind::kDepth};
+    if (name == spec.depth_in_visual_source) return Source{camera_name, Kind::kDepthInVisual};
   }
   return std::nullopt;
 }
@@ -265,9 +280,14 @@ api::ImageSource BodyCameras::DescribeSource(const std::string& source_name, con
   return out;
 }
 
-void BodyCameras::AddCameraFrames(api::FrameTreeSnapshot* tree, const std::string& name, const Camera& camera) {
-  AddEdge(tree, VisualFrameName(name), "body", camera.body_T_visual);
-  AddEdge(tree, DepthFrameName(name), VisualFrameName(name), camera.body_T_visual.Inverse() * camera.body_T_depth);
+void BodyCameras::AddCameraFrames(api::FrameTreeSnapshot* tree, const Camera& camera,
+                                  const std::optional<Pose>& body_T_mount) {
+  const auto& spec = camera.spec;
+  if (spec.mount_frame != "body" && body_T_mount) {
+    AddEdge(tree, spec.mount_frame, "body", *body_T_mount);
+  }
+  AddEdge(tree, spec.visual_frame, spec.mount_frame, spec.mount_T_visual);
+  AddEdge(tree, spec.depth_frame, spec.visual_frame, spec.mount_T_visual.Inverse() * spec.mount_T_depth);
 }
 
 api::ListImageSourcesResponse BodyCameras::ListImageSources() const {
@@ -276,12 +296,13 @@ api::ListImageSourcesResponse BodyCameras::ListImageSources() const {
   auto* tree = response.mutable_transforms_snapshot();
   (*tree->mutable_child_to_parent_edge_map())["body"];
   for (const auto& [name, camera] : cameras_) {
+    const auto& spec = camera.spec;
     for (const auto& [source_name, kind] :
-         {std::pair{VisualSourceName(name), Kind::kVisual}, std::pair{DepthSourceName(name), Kind::kDepth},
-          std::pair{DepthInVisualSourceName(name), Kind::kDepthInVisual}}) {
+         {std::pair{spec.visual_source, Kind::kVisual}, std::pair{spec.depth_source, Kind::kDepth},
+          std::pair{spec.depth_in_visual_source, Kind::kDepthInVisual}}) {
       *response.add_image_sources() = DescribeSource(source_name, Source{name, kind}, camera);
     }
-    AddCameraFrames(tree, name, camera);
+    AddCameraFrames(tree, camera, camera.visual ? camera.visual->body_T_mount : std::nullopt);
   }
   return response;
 }
@@ -345,7 +366,7 @@ api::ImageResponse BodyCameras::Respond(const Cameras& cameras, const api::Image
     image->set_format(format);
     image->set_pixel_format(pixel_format);
     *shot->mutable_acquisition_time() = ToTimestamp(frame.stamp);
-    shot->set_frame_name_image_sensor(VisualFrameName(source->camera));
+    shot->set_frame_name_image_sensor(camera.spec.visual_frame);
   } else {
     const auto preferences = PixelFormatPreferences(request);
     const bool depth_ok = std::any_of(preferences.begin(), preferences.end(), [](api::Image::PixelFormat f) {
@@ -359,7 +380,7 @@ api::ImageResponse BodyCameras::Respond(const Cameras& cameras, const api::Image
     }
     std::optional<DepthFrame> registered;
     if (source->kind == Kind::kDepthInVisual) {
-      const Pose visual_T_depth = camera.body_T_visual.Inverse() * camera.body_T_depth;
+      const Pose visual_T_depth = camera.spec.mount_T_visual.Inverse() * camera.spec.mount_T_depth;
       registered = RegisterDepth(*camera.depth, visual_T_depth, camera.visual->width, camera.visual->height,
                                  camera.visual->intrinsics);
     }
@@ -376,13 +397,15 @@ api::ImageResponse BodyCameras::Respond(const Cameras& cameras, const api::Image
     image->set_format(api::Image::FORMAT_RAW);
     image->set_pixel_format(api::Image::PIXEL_FORMAT_DEPTH_U16);
     *shot->mutable_acquisition_time() = ToTimestamp(frame.stamp);
-    shot->set_frame_name_image_sensor(source->kind == Kind::kDepth ? DepthFrameName(source->camera)
-                                                                   : VisualFrameName(source->camera));
+    shot->set_frame_name_image_sensor(source->kind == Kind::kDepth ? camera.spec.depth_frame
+                                                                   : camera.spec.visual_frame);
   }
 
   auto* tree = shot->mutable_transforms_snapshot();
   *tree = body_tree;
-  AddCameraFrames(tree, source->camera, camera);
+  // The mount where it was when the returned image was taken.
+  const auto& body_T_mount = source->kind == Kind::kVisual ? camera.visual->body_T_mount : camera.depth->body_T_mount;
+  AddCameraFrames(tree, camera, body_T_mount);
   response.set_status(api::ImageResponse::STATUS_OK);
   return response;
 }

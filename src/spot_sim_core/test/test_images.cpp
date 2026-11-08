@@ -3,6 +3,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <set>
 #include <thread>
 
 #include <jpeglib.h>
@@ -281,4 +282,46 @@ TEST(Images, WaitsForTheFirstRenderedFrame) {
   const auto response = cameras.GetImage(Request("back_fisheye_image"), BodyTree(), 5s);
   renderer.join();
   EXPECT_EQ(response.image_responses(0).status(), api::ImageResponse::STATUS_OK);
+}
+
+TEST(HandCamera, SourcesFramesAndTheWristPoseOfEachImage) {
+  BodyCameras cameras;
+  const Pose wrist_T_visual{{0.12, 0.0, 0.0}, Quat::FromRpy(-M_PI / 2, 0.0, -M_PI / 2)};
+  const Pose wrist_T_depth = wrist_T_visual * Pose{{0.02, 0.0, 0.0}, Quat{}};
+  cameras.AddCamera("hand", spot_sim::CameraSpec::Hand(wrist_T_visual, wrist_T_depth));
+
+  // Visual and depth images, taken with the wrist in different places.
+  const Pose wrist_at_visual{{0.8, 0.0, 0.3}, Quat{}};
+  const Pose wrist_at_depth{{0.7, 0.1, 0.2}, Quat::FromYaw(0.3)};
+  VisualFrame visual = TestVisual();
+  visual.body_T_mount = wrist_at_visual;
+  DepthFrame depth = TestDepth();
+  depth.body_T_mount = wrist_at_depth;
+  cameras.SetVisualFrame("hand", visual);
+  cameras.SetDepthFrame("hand", depth);
+
+  std::set<std::string> sources;
+  const auto listed = cameras.ListImageSources();
+  for (const auto& source : listed.image_sources()) {
+    sources.insert(source.name());
+  }
+  EXPECT_EQ(sources, (std::set<std::string>{"hand_color_image", "hand_depth", "hand_depth_in_hand_color_frame"}));
+
+  const auto check = [](const api::ImageResponse& response, const std::string& frame, const Pose& wrist) {
+    ASSERT_EQ(response.status(), api::ImageResponse::STATUS_OK);
+    EXPECT_EQ(response.shot().frame_name_image_sensor(), frame);
+    const auto& edges = response.shot().transforms_snapshot().child_to_parent_edge_map();
+    ASSERT_EQ(edges.count("arm0.link_wr1"), 1u);
+    EXPECT_EQ(edges.at("arm0.link_wr1").parent_frame_name(), "body");
+    EXPECT_DOUBLE_EQ(edges.at("arm0.link_wr1").parent_tform_child().position().x(), wrist.position.x);
+    EXPECT_EQ(edges.at("hand_color_image_sensor").parent_frame_name(), "arm0.link_wr1");
+    EXPECT_EQ(edges.at("hand_depth_sensor").parent_frame_name(), "hand_color_image_sensor");
+    EXPECT_EQ(edges.count("odom"), 1u);  // the robot's frames are kept
+  };
+  check(Get(cameras, Request("hand_color_image")), "hand_color_image_sensor", wrist_at_visual);
+  check(Get(cameras, Request("hand_depth")), "hand_depth_sensor", wrist_at_depth);
+  const auto registered = Get(cameras, Request("hand_depth_in_hand_color_frame"));
+  check(registered, "hand_color_image_sensor", wrist_at_depth);
+  EXPECT_EQ(registered.shot().image().cols(), kWidth);
+  EXPECT_EQ(Get(cameras, Request("frontleft_fisheye_image")).status(), api::ImageResponse::STATUS_UNKNOWN_CAMERA);
 }

@@ -1,10 +1,12 @@
-"""Slice 6: body cameras through the driver's image publisher.
+"""Slices 6 and 10: body cameras (and, with ARM=true, the hand camera)
+through the driver's image publisher.
 
 Needs the stack started with IMAGES=true (rendering in the sim, image
 publishers in the driver); skipped otherwise. Works in any world: the checks
 rely on the ground plane and the sky only.
 """
 
+import math
 import os
 import typing
 
@@ -22,12 +24,18 @@ pytestmark = pytest.mark.skipif(
     os.environ.get("IMAGES", "false").lower() not in ("1", "true"), reason="needs IMAGES=true"
 )
 
-CAMERAS = ["frontleft", "frontright", "left", "right", "back"]
-# Like the robot: 640x480 visual cameras, 424x240 depth sensors. Registered
-# depth (and the point clouds made from it) has the visual resolution.
+BODY_CAMERAS = ["frontleft", "frontright", "left", "right", "back"]
+ARM = os.environ.get("ARM", "false").lower() in ("1", "true")
+CAMERAS = BODY_CAMERAS + (["hand"] if ARM else [])
+# Like the robot: 640x480 visual cameras, 424x240 depth sensors on the body,
+# a 224x171 time-of-flight sensor in the hand. Registered depth (and the
+# point clouds made from it) has the visual resolution.
 WIDTH, HEIGHT = 640, 480
-DEPTH_WIDTH, DEPTH_HEIGHT = 424, 240
-# The driver's rgb_cameras parameter (config/driver_launch.sh).
+DEPTH_SIZE = {**{camera: (424, 240) for camera in BODY_CAMERAS}, "hand": (224, 171)}
+# Frames of the visual and the depth images.
+VISUAL_FRAME = {**{camera: f"{camera}_fisheye" for camera in BODY_CAMERAS}, "hand": "hand_color_image_sensor"}
+DEPTH_FRAME = {**{camera: camera for camera in BODY_CAMERAS}, "hand": "hand_depth_sensor"}
+# The driver's rgb_cameras parameter (config/driver_launch.sh); the hand camera is always in color.
 RGB_CAMERAS = os.environ.get("RGB_CAMERAS", "true").lower() in ("1", "true")
 
 
@@ -58,8 +66,8 @@ def collect(ros: RosHarness, topic: str, count: int, timeout_sec: float) -> typi
 def test_rgb_image_and_camera_info(ros: RosHarness, camera: str) -> None:
     image = ros.wait_for_message(Image, ros.topic(f"camera/{camera}/image"), STARTUP_TIMEOUT_SEC)
     assert (image.width, image.height) == (WIDTH, HEIGHT)
-    assert image.encoding == ("bgr8" if RGB_CAMERAS else "mono8")
-    assert image.header.frame_id == frame(f"{camera}_fisheye")
+    assert image.encoding == ("bgr8" if RGB_CAMERAS or camera == "hand" else "mono8")
+    assert image.header.frame_id == frame(VISUAL_FRAME[camera])
 
     info = ros.wait_for_message(CameraInfo, ros.topic(f"camera/{camera}/camera_info"), STARTUP_TIMEOUT_SEC)
     assert (info.width, info.height) == (WIDTH, HEIGHT)
@@ -72,15 +80,19 @@ def test_rgb_image_and_camera_info(ros: RosHarness, camera: str) -> None:
 @pytest.mark.parametrize("camera", CAMERAS)
 def test_depth_images(ros: RosHarness, camera: str) -> None:
     depth = ros.wait_for_message(Image, ros.topic(f"depth/{camera}/image"), STARTUP_TIMEOUT_SEC)
-    assert (depth.width, depth.height) == (DEPTH_WIDTH, DEPTH_HEIGHT)
-    assert depth.header.frame_id == frame(camera)
+    assert (depth.width, depth.height) == DEPTH_SIZE[camera]
+    assert depth.header.frame_id == frame(DEPTH_FRAME[camera])
     pixels = depth_array(depth)
     assert np.count_nonzero(pixels) > 0.1 * pixels.size, "the ground should be in view"
 
     registered = ros.wait_for_message(Image, ros.topic(f"depth_registered/{camera}/image"), STARTUP_TIMEOUT_SEC)
-    assert registered.header.frame_id == frame(f"{camera}_fisheye")
+    assert registered.header.frame_id == frame(VISUAL_FRAME[camera])
     assert (registered.width, registered.height) == (WIDTH, HEIGHT)
-    assert np.count_nonzero(depth_array(registered)) > 0.1 * WIDTH * HEIGHT, "registered depth is empty"
+    # The driver's default registration (depth_image_proc, no hole filling)
+    # maps each depth pixel to one visual pixel: the hand's 224x171 sensor,
+    # magnified ~4x per axis, fills only a few percent of the 640x480 image.
+    min_fill = 0.01 if camera == "hand" else 0.1
+    assert np.count_nonzero(depth_array(registered)) > min_fill * WIDTH * HEIGHT, "registered depth is empty"
 
 
 def test_front_camera_sees_ground_below_and_sky_above(ros: RosHarness) -> None:
@@ -111,15 +123,22 @@ def test_camera_frames_are_in_tf(ros: RosHarness) -> None:
     listener = TransformListener(buffer, ros.node)
     try:
         for camera in CAMERAS:
+            visual = VISUAL_FRAME[camera]
             ros.wait_until(
-                lambda: buffer.can_transform(frame("body"), frame(f"{camera}_fisheye"), rclpy.time.Time()),
+                lambda: buffer.can_transform(frame("body"), frame(visual), rclpy.time.Time()),
                 STARTUP_TIMEOUT_SEC,
-                f"TF body -> {camera}_fisheye",
+                f"TF body -> {visual}",
             )
-            t = buffer.lookup_transform(frame("body"), frame(f"{camera}_fisheye"), rclpy.time.Time(), Duration())
-            # On the body surface.
-            assert 0.05 < abs(t.transform.translation.x) + abs(t.transform.translation.y) < 0.6
-            assert buffer.can_transform(frame(f"{camera}_fisheye"), frame(camera), rclpy.time.Time())
+            t = buffer.lookup_transform(frame("body"), frame(visual), rclpy.time.Time(), Duration())
+            if camera == "hand":
+                # In the gripper, through the arm's TF (arm_link_wr1): next to the hand frame.
+                h = buffer.lookup_transform(frame("hand"), frame(visual), rclpy.time.Time(), Duration())
+                p = h.transform.translation
+                assert math.sqrt(p.x**2 + p.y**2 + p.z**2) < 0.1
+            else:
+                # On the body surface.
+                assert 0.05 < abs(t.transform.translation.x) + abs(t.transform.translation.y) < 0.6
+            assert buffer.can_transform(frame(visual), frame(DEPTH_FRAME[camera]), rclpy.time.Time())
     finally:
         del listener
 
@@ -136,7 +155,7 @@ def test_point_clouds_put_the_ground_at_zero(ros: RosHarness) -> None:
     try:
         for camera in CAMERAS:
             cloud = ros.wait_for_message(PointCloud2, ros.topic(f"depth_registered/{camera}/points"), STARTUP_TIMEOUT_SEC)
-            assert cloud.header.frame_id == frame(f"{camera}_fisheye")
+            assert cloud.header.frame_id == frame(VISUAL_FRAME[camera])
             assert (cloud.width, cloud.height) == (WIDTH, HEIGHT)
             offsets = {f.name: f.offset for f in cloud.fields}
             assert {"x", "y", "z", "rgb"} <= offsets.keys()
@@ -149,6 +168,10 @@ def test_point_clouds_put_the_ground_at_zero(ros: RosHarness) -> None:
             ground = xyz[HEIGHT // 2 :, WIDTH // 4 : 3 * WIDTH // 4].reshape(-1, 3)
             ground = ground[np.isfinite(ground).all(axis=1)]
             assert len(ground) > 100, f"{camera}: no ground points"
+            if camera == "hand":
+                # The hand looks straight ahead: whatever is in front of the
+                # robot fills the middle of the view, not just the ground.
+                continue
 
             ros.wait_until(
                 lambda: buffer.can_transform(frame("odom"), cloud.header.frame_id, rclpy.time.Time()),
