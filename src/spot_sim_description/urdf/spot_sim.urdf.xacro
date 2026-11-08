@@ -65,7 +65,8 @@
   </xacro:macro>
 
   <!--
-    The gripper camera, at the top of the gripper's front face, above the jaws, looking forward: a
+    The gripper camera, in the palm between the jaws, looking forward: as on
+    the robot, the closed gripper blocks most of the view; open it to see. A
     visual camera (640x480, ~60 deg, like the robot's at its default
     resolution) and, 2 cm to its right, a time-of-flight depth sensor
     (224x171, wider). SpotApiSystem serves hand_color_image, hand_depth and
@@ -102,7 +103,7 @@
 
   <xacro:if value="$(arg cameras)">
     <xacro:if value="$(arg arm)">
-      <xacro:hand_camera x="0.16" z="0.045"/>
+      <xacro:hand_camera x="0.145" z="-0.015"/>
     </xacro:if>
     <xacro:body_camera name="frontleft" x="0.45" y="0.045" z="-0.03" pitch="0.35" yaw="-0.25"/>
     <xacro:body_camera name="frontright" x="0.45" y="-0.045" z="-0.03" pitch="0.35" yaw="0.25"/>

@@ -47,7 +47,7 @@ Code pointers: API semantics in `src/spot_sim_core` (`api_server.cpp`,
 | `STATUS_STALLED_HOLDING_ITEM`, carry-state rules when stowing with an item | Not modelled | |
 | Gripper camera parameters (resolution via `camera_mode`, exposure, focus, ...) | Stored and reported back, no effect: always 640x480 | |
 | Other hand camera sources: greyscale `hand_image`, `hand_color_in_hand_depth_frame` | Not served | The driver does not use them |
-| Hand camera placement and optics | Approximations: top of the gripper's front face; ~60 deg color, 224x171 / ~80 deg time-of-flight depth | `spot_sim.urdf.xacro` |
+| Hand camera placement and optics | Approximations. spot_description has no camera frame (the robot reports it in each image's transform snapshot), so the cameras sit in the palm between the jaws, placed from the gripper mesh: closed, the finger blocks most of the view, as on the robot. ~60 deg color, 224x171 / ~80 deg time-of-flight depth | `spot_sim.urdf.xacro`; replace with the robot's `arm0.link_wr1` -> `hand_color_image_sensor` / `hand_depth_sensor` transforms once known |
 | Gripperless arm (`gripperless:=true`) | Not offered | Small: pass the xacro arg, drop `gripper-camera-param` |
 | Arm in `InverseKinematicsService` | Always NO_SOLUTION_FOUND | Could reuse the slice 9 IK |
 | Stow and carry poses | Approximations, not measured on a real robot (ready is the robot's) | |

@@ -19,6 +19,7 @@ from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import Buffer, TransformListener
 
 from conftest import SPOT_NAME, STARTUP_TIMEOUT_SEC, RosHarness
+from driving import assert_success, claim_power_on_and_stand, power_off_and_release, wait_for_body_height
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("IMAGES", "false").lower() not in ("1", "true"), reason="needs IMAGES=true"
@@ -83,16 +84,14 @@ def test_depth_images(ros: RosHarness, camera: str) -> None:
     assert (depth.width, depth.height) == DEPTH_SIZE[camera]
     assert depth.header.frame_id == frame(DEPTH_FRAME[camera])
     pixels = depth_array(depth)
-    assert np.count_nonzero(pixels) > 0.1 * pixels.size, "the ground should be in view"
 
     registered = ros.wait_for_message(Image, ros.topic(f"depth_registered/{camera}/image"), STARTUP_TIMEOUT_SEC)
     assert registered.header.frame_id == frame(VISUAL_FRAME[camera])
     assert (registered.width, registered.height) == (WIDTH, HEIGHT)
-    # The driver's default registration (depth_image_proc, no hole filling)
-    # maps each depth pixel to one visual pixel: the hand's 224x171 sensor,
-    # magnified ~4x per axis, fills only a few percent of the 640x480 image.
-    min_fill = 0.01 if camera == "hand" else 0.1
-    assert np.count_nonzero(depth_array(registered)) > min_fill * WIDTH * HEIGHT, "registered depth is empty"
+    if camera == "hand":
+        return  # the closed gripper blocks the view: test_hand_camera_sees_once_the_gripper_opens
+    assert np.count_nonzero(pixels) > 0.1 * pixels.size, "the ground should be in view"
+    assert np.count_nonzero(depth_array(registered)) > 0.1 * WIDTH * HEIGHT, "registered depth is empty"
 
 
 def test_front_camera_sees_ground_below_and_sky_above(ros: RosHarness) -> None:
@@ -166,12 +165,12 @@ def test_point_clouds_put_the_ground_at_zero(ros: RosHarness) -> None:
             # Below the horizon, the ground dominates. (The depth sensor's
             # narrower vertical field of view leaves the bottom rows empty.)
             ground = xyz[HEIGHT // 2 :, WIDTH // 4 : 3 * WIDTH // 4].reshape(-1, 3)
+            if camera == "hand":
+                # The hand looks straight ahead (through the gripper, closed or
+                # open): not a ground check. test_hand_camera_sees_once_the_gripper_opens.
+                continue
             ground = ground[np.isfinite(ground).all(axis=1)]
             assert len(ground) > 100, f"{camera}: no ground points"
-            if camera == "hand":
-                # The hand looks straight ahead: whatever is in front of the
-                # robot fills the middle of the view, not just the ground.
-                continue
 
             ros.wait_until(
                 lambda: buffer.can_transform(frame("odom"), cloud.header.frame_id, rclpy.time.Time()),
@@ -191,3 +190,40 @@ def test_point_clouds_put_the_ground_at_zero(ros: RosHarness) -> None:
             assert np.median(np.abs(in_odom[:, 2])) < 0.02, f"{camera}: ground at z={np.median(in_odom[:, 2]):.3f}"
     finally:
         del listener
+
+
+def gripper_blocked_fraction(image: Image) -> float:
+    """Share of the image's central half covered by the dark grey gripper."""
+    pixels = np.frombuffer(bytes(image.data), np.uint8).reshape(image.height, image.step)[:, : image.width * 3]
+    pixels = pixels.reshape(image.height, image.width, 3)
+    center = pixels[image.height // 4 : 3 * image.height // 4, image.width // 4 : 3 * image.width // 4]
+    return float(np.mean(np.all(center < 70, axis=2)))
+
+
+@pytest.mark.skipif(not ARM, reason="needs ARM=true")
+def test_hand_camera_sees_once_the_gripper_opens(ros: RosHarness) -> None:
+    """Like on the robot, the camera in the palm looks through the jaws: closed, they block the view."""
+    closed = ros.wait_for_message(Image, ros.topic("camera/hand/image"), STARTUP_TIMEOUT_SEC)
+    assert gripper_blocked_fraction(closed) > 0.5
+
+    claim_power_on_and_stand(ros)
+    try:
+        assert_success(ros.trigger("open_gripper"))
+        stamp = stamp_sec(ros.wait_for_message(Clock, "/clock", STARTUP_TIMEOUT_SEC).clock)
+        after = lambda msg: stamp_sec(msg.header.stamp) > stamp + 0.5  # noqa: E731 - rendered with the jaw open
+        opened = ros.wait_for_message(Image, ros.topic("camera/hand/image"), STARTUP_TIMEOUT_SEC, predicate=after)
+        assert gripper_blocked_fraction(opened) < 0.1
+        depth = depth_array(ros.wait_for_message(Image, ros.topic("depth/hand/image"), STARTUP_TIMEOUT_SEC, predicate=after))
+        assert np.count_nonzero(depth) > 0.2 * depth.size, "the scene should be in view"
+        # The driver's default registration (depth_image_proc, no hole filling)
+        # maps each depth pixel to one visual pixel: the 224x171 sensor,
+        # magnified ~4x per axis, fills only a few percent of the 640x480 image.
+        registered = ros.wait_for_message(
+            Image, ros.topic("depth_registered/hand/image"), STARTUP_TIMEOUT_SEC, predicate=after
+        )
+        assert np.count_nonzero(depth_array(registered)) > 0.01 * WIDTH * HEIGHT
+        assert_success(ros.trigger("close_gripper"))
+    finally:
+        assert_success(ros.trigger("sit"))
+        wait_for_body_height(ros, 0.20, tolerance=0.04)
+        power_off_and_release(ros)
