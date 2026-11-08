@@ -99,7 +99,7 @@ std::string EncodeJpeg(const uint8_t* pixels, int width, int height, int channel
 ///                                    "frontleft_fisheye"
 /// and likewise for the hand camera (CameraSpec::Hand).
 /// Thread-safe.
-class BodyCameras {
+class CameraSystem {
  public:
   /// Registers camera `name`.
   void AddCamera(const std::string& name, const CameraSpec& spec);

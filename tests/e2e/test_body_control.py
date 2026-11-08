@@ -18,20 +18,14 @@ from spot_msgs.msg import FootState, FootStateArray
 from spot_msgs.srv import SetStandHeight, SetVelocity
 
 from conftest import RosHarness, assert_success
-from driving import (
+from driving import Drive, after, pitch, planar_speed, stamp_sec, twist, yaw
+from robot_setup import (
     MOTION_TIMEOUT_SEC,
     STAND_HEIGHT,
-    Drive,
-    after,
     claim_power_on_and_stand,
-    pitch,
-    planar_speed,
     power_off_and_release,
-    stamp_sec,
-    twist,
     wait_for_body_height,
     wait_for_odometry,
-    yaw,
 )
 
 ANGLE_TOLERANCE = 0.02

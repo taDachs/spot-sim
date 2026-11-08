@@ -1,7 +1,7 @@
 #pragma once
 
 // Feeds a Spot camera, a Gazebo visual camera plus a depth camera next to
-// it, into spot_sim::BodyCameras: subscribes to both sensors' image topics
+// it, into spot_sim::CameraSystem: subscribes to both sensors' image topics
 // in-process and hands over every new image. For cameras on a moving mount
 // (the hand camera on the wrist), each image carries the mount's pose at
 // arrival.
@@ -29,7 +29,7 @@ class CameraFeed {
   /// `mount_pose`: body_T_mount now (cameras on a moving mount only).
   using MountPose = std::function<std::optional<spot_sim::Pose>()>;
 
-  CameraFeed(std::string name, Sensor visual, Sensor depth, spot_sim::BodyCameras& cameras, MountPose mount_pose = {})
+  CameraFeed(std::string name, Sensor visual, Sensor depth, spot_sim::CameraSystem& cameras, MountPose mount_pose = {})
       : name_(std::move(name)),
         visual_(std::move(visual)),
         depth_(std::move(depth)),
@@ -86,7 +86,7 @@ class CameraFeed {
   std::string name_;
   Sensor visual_;
   Sensor depth_;
-  spot_sim::BodyCameras& cameras_;
+  spot_sim::CameraSystem& cameras_;
   MountPose mount_pose_;
   gz::transport::Node node_;
   bool ok_ = false;

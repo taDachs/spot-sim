@@ -20,20 +20,8 @@ from sensor_msgs.msg import JointState
 from spot_msgs.msg import FootState, FootStateArray
 
 from conftest import STARTUP_TIMEOUT_SEC, RosHarness
-from driving import (
-    CMD_DURATION,
-    MOTION_TIMEOUT_SEC,
-    RTF,
-    STAND_HEIGHT,
-    Drive,
-    after,
-    claim_power_on_and_stand,
-    planar_speed,
-    power_off_and_release,
-    stamp_sec,
-    twist,
-    yaw,
-)
+from driving import CMD_DURATION, RTF, Drive, after, planar_speed, stamp_sec, twist, yaw
+from robot_setup import MOTION_TIMEOUT_SEC, STAND_HEIGHT, claim_power_on_and_stand, power_off_and_release
 
 def test_simulation_runs_at_requested_rtf(ros: RosHarness) -> None:
     """Sanity check for the RTF matrix: the simulation really runs at RTF."""

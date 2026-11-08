@@ -26,14 +26,8 @@ from spot_msgs.action import RobotCommand
 from tf2_ros import Buffer, TransformListener
 
 from conftest import RosHarness, assert_success, frame
-from driving import (
-    MOTION_TIMEOUT_SEC,
-    Drive,
-    claim_power_on_and_stand,
-    power_off_and_release,
-    twist,
-    wait_for_body_height,
-)
+from driving import Drive, twist
+from robot_setup import MOTION_TIMEOUT_SEC, claim_power_on_and_stand, power_off_and_release, wait_for_body_height
 
 pytestmark = pytest.mark.skipif(os.environ.get("ARM", "false").lower() not in ("1", "true"), reason="needs ARM=true")
 

@@ -12,7 +12,7 @@
 
 using namespace std::chrono_literals;
 namespace api = bosdyn::api;
-using spot_sim::BodyCameras;
+using spot_sim::CameraSystem;
 using spot_sim::DepthFrame;
 using spot_sim::Pose;
 using spot_sim::Quat;
@@ -46,8 +46,8 @@ const Pose kMount{{0.4, 0.05, -0.02}, Quat::FromRpy(-M_PI / 2, 0.0, -M_PI / 2)};
 // Depth sensor 2 cm to the right of the visual camera (optical x).
 const Pose kDepthMount = kMount * Pose{{0.02, 0.0, 0.0}, Quat{}};
 
-std::unique_ptr<BodyCameras> Cameras() {
-  auto cameras = std::make_unique<BodyCameras>();
+std::unique_ptr<CameraSystem> Cameras() {
+  auto cameras = std::make_unique<CameraSystem>();
   cameras->AddCamera("frontleft", kMount, kDepthMount);
   cameras->SetVisualFrame("frontleft", TestVisual());
   cameras->SetDepthFrame("frontleft", TestDepth());
@@ -83,7 +83,7 @@ api::FrameTreeSnapshot BodyTree() {
   return tree;
 }
 
-api::ImageResponse Get(const BodyCameras& cameras, const api::GetImageRequest& request) {
+api::ImageResponse Get(const CameraSystem& cameras, const api::GetImageRequest& request) {
   const auto response = cameras.GetImage(request, BodyTree(), 10ms);
   EXPECT_EQ(response.image_responses_size(), 1);
   return response.image_responses(0);
@@ -264,7 +264,7 @@ TEST(Images, FallbackPixelFormat) {
 }
 
 TEST(Images, WaitsForTheFirstRenderedFrame) {
-  BodyCameras cameras;
+  CameraSystem cameras;
   cameras.AddCamera("back", kMount, kDepthMount);
   EXPECT_EQ(cameras.GetImage(Request("back_fisheye_image"), BodyTree(), 10ms).image_responses(0).status(),
             api::ImageResponse::STATUS_SOURCE_DATA_ERROR);
@@ -279,7 +279,7 @@ TEST(Images, WaitsForTheFirstRenderedFrame) {
 }
 
 TEST(HandCamera, SourcesFramesAndTheWristPoseOfEachImage) {
-  BodyCameras cameras;
+  CameraSystem cameras;
   const Pose wrist_T_visual{{0.12, 0.0, 0.0}, Quat::FromRpy(-M_PI / 2, 0.0, -M_PI / 2)};
   const Pose wrist_T_depth = wrist_T_visual * Pose{{0.02, 0.0, 0.0}, Quat{}};
   cameras.AddCamera("hand", spot_sim::CameraSpec::Hand(wrist_T_visual, wrist_T_depth));

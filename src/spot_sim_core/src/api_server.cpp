@@ -402,7 +402,8 @@ class WorldObjectServiceImpl final : public api::WorldObjectService::Service {
   Robot& robot_;
 };
 
-/// The robot has no arm, so no inverse kinematics request has a solution.
+/// Inverse kinematics requests are not solved (body or arm; the arm's IK only
+/// serves arm commands), so none has a solution.
 class InverseKinematicsServiceImpl final : public api::spot::InverseKinematicsService::Service {
  public:
   explicit InverseKinematicsServiceImpl(Robot& robot) : robot_(robot) {}

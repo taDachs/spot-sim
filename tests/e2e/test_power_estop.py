@@ -6,7 +6,7 @@ The tests run in order and share the robot: claim -> power on -> E-Stops -> rele
 from spot_msgs.msg import EStopState, EStopStateArray, LeaseArray, PowerState
 
 from conftest import STARTUP_TIMEOUT_SEC, RosHarness, assert_success
-from driving import wait_for_motor_state
+from robot_setup import wait_for_motor_state
 
 STATE_TIMEOUT_SEC = 15.0
 

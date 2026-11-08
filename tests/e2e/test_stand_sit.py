@@ -7,7 +7,7 @@ from sensor_msgs.msg import JointState
 from spot_msgs.msg import FootStateArray, FootState, PowerState
 
 from conftest import STARTUP_TIMEOUT_SEC, SPOT_NAME, RosHarness, assert_success
-from driving import MOTION_TIMEOUT_SEC, STAND_HEIGHT, wait_for_body_height, wait_for_motor_state
+from robot_setup import MOTION_TIMEOUT_SEC, STAND_HEIGHT, wait_for_body_height, wait_for_motor_state
 
 SIT_HEIGHT = 0.20
 HEIGHT_TOLERANCE = 0.04

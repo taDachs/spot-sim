@@ -100,8 +100,9 @@ class Robot {
 
   TimeSyncService& time_sync() { return time_sync_; }
 
-  /// Body cameras (registered and fed by the simulation).
-  BodyCameras& cameras() { return cameras_; }
+  /// The body cameras and, with an arm, the hand camera (registered and fed
+  /// by the simulation).
+  CameraSystem& cameras() { return cameras_; }
 
   /// World objects added by clients.
   WorldObjects& world_objects() { return world_objects_; }
@@ -114,7 +115,7 @@ class Robot {
   mutable std::mutex firmware_mutex_;
   Firmware firmware_;
   TimeSyncService time_sync_;
-  BodyCameras cameras_;
+  CameraSystem cameras_;
   WorldObjects world_objects_;
 };
 

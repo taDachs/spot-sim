@@ -186,12 +186,12 @@ std::string EncodeJpeg(const uint8_t* pixels, int width, int height, int channel
   return out;
 }
 
-void BodyCameras::AddCamera(const std::string& name, const CameraSpec& spec) {
+void CameraSystem::AddCamera(const std::string& name, const CameraSpec& spec) {
   std::lock_guard<std::mutex> lock(mutex_);
   cameras_[name].spec = spec;
 }
 
-void BodyCameras::SetVisualFrame(const std::string& name, VisualFrame frame) {
+void CameraSystem::SetVisualFrame(const std::string& name, VisualFrame frame) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto it = cameras_.find(name);
@@ -203,7 +203,7 @@ void BodyCameras::SetVisualFrame(const std::string& name, VisualFrame frame) {
   frame_arrived_.notify_all();
 }
 
-void BodyCameras::SetDepthFrame(const std::string& name, DepthFrame frame) {
+void CameraSystem::SetDepthFrame(const std::string& name, DepthFrame frame) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto it = cameras_.find(name);
@@ -215,12 +215,12 @@ void BodyCameras::SetDepthFrame(const std::string& name, DepthFrame frame) {
   frame_arrived_.notify_all();
 }
 
-bool BodyCameras::HasCamera(const std::string& name) const {
+bool CameraSystem::HasCamera(const std::string& name) const {
   std::lock_guard<std::mutex> lock(mutex_);
   return cameras_.count(name) > 0;
 }
 
-std::optional<BodyCameras::Source> BodyCameras::ParseSource(const Cameras& cameras, const std::string& name) {
+std::optional<CameraSystem::Source> CameraSystem::ParseSource(const Cameras& cameras, const std::string& name) {
   for (const auto& [camera_name, camera] : cameras) {
     const auto& spec = camera.spec;
     if (name == spec.visual_source) return Source{camera_name, Kind::kVisual};
@@ -230,7 +230,7 @@ std::optional<BodyCameras::Source> BodyCameras::ParseSource(const Cameras& camer
   return std::nullopt;
 }
 
-bool BodyCameras::HasData(const Camera& camera, Kind kind) {
+bool CameraSystem::HasData(const Camera& camera, Kind kind) {
   switch (kind) {
     case Kind::kVisual:
       return camera.visual != nullptr;
@@ -242,7 +242,7 @@ bool BodyCameras::HasData(const Camera& camera, Kind kind) {
   return false;
 }
 
-api::ImageSource BodyCameras::DescribeSource(const std::string& source_name, const Source& source,
+api::ImageSource CameraSystem::DescribeSource(const std::string& source_name, const Source& source,
                                              const Camera& camera) {
   api::ImageSource out;
   out.set_name(source_name);
@@ -279,7 +279,7 @@ api::ImageSource BodyCameras::DescribeSource(const std::string& source_name, con
   return out;
 }
 
-void BodyCameras::AddCameraFrames(api::FrameTreeSnapshot* tree, const Camera& camera,
+void CameraSystem::AddCameraFrames(api::FrameTreeSnapshot* tree, const Camera& camera,
                                   const std::optional<Pose>& body_T_mount) {
   const auto& spec = camera.spec;
   if (spec.mount_frame != kBodyFrame && body_T_mount) {
@@ -289,7 +289,7 @@ void BodyCameras::AddCameraFrames(api::FrameTreeSnapshot* tree, const Camera& ca
   AddEdge(tree, spec.depth_frame, spec.visual_frame, spec.mount_T_visual.Inverse() * spec.mount_T_depth);
 }
 
-api::ListImageSourcesResponse BodyCameras::ListImageSources() const {
+api::ListImageSourcesResponse CameraSystem::ListImageSources() const {
   std::lock_guard<std::mutex> lock(mutex_);
   api::ListImageSourcesResponse response;
   auto* tree = response.mutable_transforms_snapshot();
@@ -306,7 +306,7 @@ api::ListImageSourcesResponse BodyCameras::ListImageSources() const {
   return response;
 }
 
-api::ImageResponse BodyCameras::Respond(const Cameras& cameras, const api::ImageRequest& request,
+api::ImageResponse CameraSystem::Respond(const Cameras& cameras, const api::ImageRequest& request,
                                         const api::FrameTreeSnapshot& body_tree) {
   api::ImageResponse response;
   const auto source = ParseSource(cameras, request.image_source_name());
@@ -408,7 +408,7 @@ api::ImageResponse BodyCameras::Respond(const Cameras& cameras, const api::Image
   return response;
 }
 
-api::GetImageResponse BodyCameras::GetImage(const api::GetImageRequest& request, const api::FrameTreeSnapshot& body_tree,
+api::GetImageResponse CameraSystem::GetImage(const api::GetImageRequest& request, const api::FrameTreeSnapshot& body_tree,
                                             std::chrono::milliseconds first_frame_timeout) const {
   Cameras cameras;
   {

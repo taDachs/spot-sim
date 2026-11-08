@@ -23,7 +23,7 @@ from std_msgs.msg import Bool
 from tf2_ros import Buffer, TransformListener
 
 from conftest import STARTUP_TIMEOUT_SEC, RosHarness, assert_success, frame
-from driving import (
+from robot_setup import (
     MOTION_TIMEOUT_SEC,
     STAND_HEIGHT,
     claim_power_on_and_stand,

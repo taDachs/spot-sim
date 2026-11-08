@@ -15,13 +15,8 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from spot_msgs.srv import Dock, ListWorldObjects, MutateWorldObject
 
 from conftest import SPOT_NAME, RosHarness, assert_success
-from driving import (
-    Drive,
-    claim_power_on_and_stand,
-    power_off_and_release,
-    twist,
-    wait_for_body_height,
-)
+from driving import Drive, twist
+from robot_setup import claim_power_on_and_stand, power_off_and_release, wait_for_body_height
 
 QUIET_IDLE_SEC = float(os.environ.get("QUIET_IDLE_SEC", "60"))
 REPORT_FILE = "/reports/unimplemented_api_calls.txt"

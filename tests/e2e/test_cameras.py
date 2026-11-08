@@ -19,7 +19,7 @@ from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import Buffer, TransformListener
 
 from conftest import STARTUP_TIMEOUT_SEC, RosHarness, assert_success, frame
-from driving import claim_power_on_and_stand, power_off_and_release, wait_for_body_height
+from robot_setup import claim_power_on_and_stand, power_off_and_release, wait_for_body_height
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("IMAGES", "false").lower() not in ("1", "true"), reason="needs IMAGES=true"
