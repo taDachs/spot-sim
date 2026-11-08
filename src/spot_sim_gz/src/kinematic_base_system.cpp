@@ -15,6 +15,12 @@
 // velocity (bounded by the command's acceleration limits) and the planar pose
 // is integrated in simulation time. The legs trot along (spot_sim::TrotGait),
 // purely for looks: stance feet stay put on the ground, swing feet lift.
+//
+// Body posture: while standing or walking, the body height and orientation
+// move toward the commanded posture (MobilityParams body_control) at limited
+// rates, with the feet staying put (spot_sim::Stance). Postures the legs
+// cannot reach are scaled back toward neutral. The robot returns to the
+// neutral posture before sitting down.
 
 #include <algorithm>
 #include <array>
@@ -38,6 +44,7 @@
 
 #include <spot_sim_core/gait.hpp>
 #include <spot_sim_core/leg_kinematics.hpp>
+#include <spot_sim_core/stance.hpp>
 
 #include "spot_sim_gz/components.hpp"
 
@@ -148,7 +155,34 @@ class KinematicBaseSystem : public gz::sim::System,
     yaw_ = std::remainder(yaw_ + v_rot_ * dt, 2.0 * M_PI);
   }
 
+  static spot_sim::BodyPosture TargetPosture(const spot_sim::LocomotionCommand& command) {
+    if (!command.motors_on || command.mode == LocomotionMode::kSit) {
+      return {};
+    }
+    return spot_sim::BodyPosture{command.body_height_offset, command.body_roll, command.body_pitch, command.body_yaw}
+        .Clamped();
+  }
+
+  bool PostureNeutral() const { return posture_ == spot_sim::BodyPosture{}; }
+
+  void AdvanceBodyPosture(const spot_sim::LocomotionCommand& command, double dt) {
+    posture_target_ = TargetPosture(command);
+    if (!command.motors_on) {
+      posture_ = {};  // collapsing
+      return;
+    }
+    if (progress_ < 1.0) {
+      return;  // posture changes only once up
+    }
+    const double linear = height_rate_ * dt, angular = angular_rate_ * dt;
+    posture_.height_offset = Approach(posture_.height_offset, posture_target_.height_offset, linear);
+    posture_.roll = Approach(posture_.roll, posture_target_.roll, angular);
+    posture_.pitch = Approach(posture_.pitch, posture_target_.pitch, angular);
+    posture_.yaw = Approach(posture_.yaw, posture_target_.yaw, angular);
+  }
+
   void AdvancePosture(const spot_sim::LocomotionCommand& command, double dt) {
+    AdvanceBodyPosture(command, dt);
     double duration = stand_duration_;
     if (!command.motors_on) {
       standing_target_ = false;
@@ -166,8 +200,8 @@ class KinematicBaseSystem : public gz::sim::System,
           break;  // keep the current posture target
       }
     }
-    // Come to a stop before sitting down.
-    stopping_first_ = command.motors_on && !standing_target_ && Moving();
+    // Come to a stop and level the body before sitting down.
+    stopping_first_ = command.motors_on && !standing_target_ && (Moving() || !PostureNeutral());
     if (stopping_first_) {
       standing_target_ = true;
     }
@@ -175,30 +209,40 @@ class KinematicBaseSystem : public gz::sim::System,
     progress_ = standing_target_ ? std::min(1.0, progress_ + step) : std::max(0.0, progress_ - step);
   }
 
-  /// Leg joints: the trot while standing and walking, otherwise the
-  /// sit <-> stand blend.
-  std::array<spot_sim::LegJoints, 4> LegPose(double& height) const {
+  struct BodyAndLegs {
+    spot_sim::Pose ground_T_body;  ///< ground frame: below the nominal body, heading of the footprint
     std::array<spot_sim::LegJoints, 4> legs;
-    if (progress_ >= 1.0 && gait_.Active()) {
-      height = stand_height_;
+  };
+
+  /// Standing (posed, trotting) or the sit <-> stand blend.
+  BodyAndLegs LegPose() const {
+    BodyAndLegs out;
+    if (progress_ >= 1.0) {
       const auto offsets = gait_.FootOffsets();
-      for (std::size_t leg = 0; leg < 4; ++leg) {
-        legs[leg] = spot_sim::TrotGait::Solve(leg, offsets[leg], stand_height_)
-                        .value_or(spot_sim::LegJoints{0.0, stand_.hip_y, stand_.knee});
+      // Scale an unreachable posture back toward neutral.
+      for (int i = 10; i >= 0; --i) {
+        const auto posture = posture_.Scaled(i / 10.0);
+        if (const auto legs = spot_sim::Stance::Solve(stand_height_, posture, offsets)) {
+          out.ground_T_body = spot_sim::Stance::BodyInGround(stand_height_, posture);
+          out.legs = *legs;
+          return out;
+        }
       }
-      return legs;
+      // Not even the neutral posture fits the gait's feet: stand still.
+      out.ground_T_body = spot_sim::Stance::BodyInGround(stand_height_, {});
+      out.legs.fill(spot_sim::LegJoints{0.0, stand_.hip_y, stand_.knee});
+      return out;
     }
     // Smoothstep for a gentle start and stop of the motion.
     const double s = progress_ * progress_ * (3.0 - 2.0 * progress_);
     const LegKinematics::Angles q{sit_.hip_y + s * (stand_.hip_y - sit_.hip_y), sit_.knee + s * (stand_.knee - sit_.knee)};
-    height = LegKinematics::BodyHeight(q);
-    legs.fill(spot_sim::LegJoints{0.0, q.hip_y, q.knee});
-    return legs;
+    out.ground_T_body.position.z = LegKinematics::BodyHeight(q);
+    out.legs.fill(spot_sim::LegJoints{0.0, q.hip_y, q.knee});
+    return out;
   }
 
   void Apply(gz::sim::EntityComponentManager& ecm) {
-    double height = 0.0;
-    const auto legs = LegPose(height);
+    const auto [ground_T_body, legs] = LegPose();
     for (std::size_t leg = 0; leg < 4; ++leg) {
       joints_[3 * leg + 0].ResetPosition(ecm, {legs[leg].hip_x});
       joints_[3 * leg + 1].ResetPosition(ecm, {legs[leg].hip_y});
@@ -207,7 +251,10 @@ class KinematicBaseSystem : public gz::sim::System,
         joints_[3 * leg + j].ResetVelocity(ecm, {0.0});
       }
     }
-    model_.SetWorldPoseCmd(ecm, gz::math::Pose3d(x_, y_, height, 0.0, 0.0, yaw_));
+    const auto& p = ground_T_body.position;
+    const auto& r = ground_T_body.rotation;
+    const gz::math::Pose3d world_T_ground(x_, y_, 0.0, 0.0, 0.0, yaw_);
+    model_.SetWorldPoseCmd(ecm, world_T_ground * gz::math::Pose3d(p.x, p.y, p.z, r.w, r.x, r.y, r.z));
     ecm.SetComponentData<components::LinearVelocityCmd>(model_.Entity(), gz::math::Vector3d::Zero);
     ecm.SetComponentData<components::AngularVelocityCmd>(model_.Entity(), gz::math::Vector3d::Zero);
   }
@@ -221,7 +268,8 @@ class KinematicBaseSystem : public gz::sim::System,
     } else {
       status.state = LocomotionState::kTransitioning;
     }
-    const bool at_target = !stopping_first_ && (standing_target_ ? progress_ >= 1.0 : progress_ <= 0.0);
+    const bool at_target =
+        !stopping_first_ && (standing_target_ ? progress_ >= 1.0 && posture_ == posture_target_ : progress_ <= 0.0);
     if (at_target) {
       reached_sequence_ = command.sequence;
     }
@@ -239,12 +287,16 @@ class KinematicBaseSystem : public gz::sim::System,
   LegKinematics::Angles sit_;
   LegKinematics::Angles stand_;
   spot_sim::TrotGait gait_;
+  double height_rate_ = 0.3;   ///< body height change [m/s]
+  double angular_rate_ = 1.0;  ///< body orientation change [rad/s]
 
   double x_ = 0.0, y_ = 0.0, yaw_ = 0.0;
   double v_x_ = 0.0, v_y_ = 0.0, v_rot_ = 0.0;  ///< body-frame velocity
   double progress_ = 0.0;  ///< 0 = sitting, 1 = standing
   bool standing_target_ = false;
-  bool stopping_first_ = false;  ///< asked to sit while still walking
+  bool stopping_first_ = false;  ///< asked to sit while still walking or posed
+  spot_sim::BodyPosture posture_;         ///< current body posture
+  spot_sim::BodyPosture posture_target_;  ///< commanded body posture
   uint32_t reached_sequence_ = 0;
 };
 

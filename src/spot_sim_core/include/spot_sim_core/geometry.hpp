@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 
 #include <bosdyn/api/geometry.pb.h>
@@ -22,7 +23,15 @@ struct Quat {
                 cr * cp * sy - sr * sp * cy};
   }
 
+  /// Roll, pitch, yaw with rotation = Rz(yaw) * Ry(pitch) * Rx(roll) (inverse of FromRpy).
+  double Roll() const { return std::atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y)); }
+  double Pitch() const { return std::asin(std::clamp(2.0 * (w * y - z * x), -1.0, 1.0)); }
   double Yaw() const { return std::atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)); }
+
+  Quat Normalized() const {
+    const double n = std::sqrt(w * w + x * x + y * y + z * z);
+    return n > 0.0 ? Quat{w / n, x / n, y / n, z / n} : Quat{};
+  }
   Quat Conjugate() const { return Quat{w, -x, -y, -z}; }
 
   Quat operator*(const Quat& o) const {

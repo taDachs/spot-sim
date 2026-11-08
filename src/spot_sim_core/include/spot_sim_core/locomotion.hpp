@@ -10,7 +10,7 @@ namespace spot_sim {
 enum class LocomotionMode : uint8_t {
   kSit,       ///< fold legs, rest on the ground
   kStand,     ///< stand still
-  kVelocity,  ///< walk at the commanded body velocity (slice 4)
+  kVelocity,  ///< walk at the commanded body velocity
   kStop,      ///< stop walking, keep the current posture
 };
 
@@ -25,7 +25,8 @@ struct LocomotionCommand {
   double v_x = 0.0, v_y = 0.0, v_rot = 0.0;
   /// How fast the base may change the velocity [m/s^2, rad/s^2].
   double max_accel_x = 2.0, max_accel_y = 2.0, max_accel_rot = 2.0;
-  /// Body posture relative to nominal standing (slice 5).
+  /// Body posture relative to nominal standing, in the footprint frame
+  /// (spot_sim::BodyPosture: height offset [m], roll / pitch / yaw [rad]).
   double body_height_offset = 0.0;
   double body_roll = 0.0, body_pitch = 0.0, body_yaw = 0.0;
 

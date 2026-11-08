@@ -53,16 +53,16 @@ class RosHarness:
             pytest.fail(f"no matching message on {topic} within {timeout_sec:.0f} s")
         return received[0]
 
-    def trigger(self, name: str, timeout_sec: float = 60.0) -> Trigger.Response:
-        """Call a std_srvs/Trigger service of the driver and return its response."""
-        client = self.node.create_client(Trigger, self.topic(name))
+    def call(self, srv_type: type, name: str, request: typing.Any, timeout_sec: float = 60.0) -> typing.Any:
+        """Call a service of the driver (relative name) and return its response."""
+        client = self.node.create_client(srv_type, self.topic(name))
         try:
             deadline = time.monotonic() + timeout_sec
             while not client.service_is_ready():
                 if time.monotonic() > deadline:
                     pytest.fail(f"service {self.topic(name)} not available")
                 self.executor.spin_once(timeout_sec=0.1)
-            future = client.call_async(Trigger.Request())
+            future = client.call_async(request)
             while not future.done():
                 if time.monotonic() > deadline:
                     pytest.fail(f"service {self.topic(name)} did not answer within {timeout_sec:.0f} s")
@@ -70,6 +70,10 @@ class RosHarness:
             return future.result()
         finally:
             self.node.destroy_client(client)
+
+    def trigger(self, name: str, timeout_sec: float = 60.0) -> Trigger.Response:
+        """Call a std_srvs/Trigger service of the driver and return its response."""
+        return self.call(Trigger, name, Trigger.Request(), timeout_sec)
 
 
 @pytest.fixture(scope="session")

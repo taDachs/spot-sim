@@ -4,6 +4,7 @@
 
 #include "spot_sim_core/gait.hpp"
 #include "spot_sim_core/leg_kinematics.hpp"
+#include "spot_sim_core/stance.hpp"
 
 using spot_sim::LegKinematics;
 using spot_sim::TrotGait;
@@ -12,16 +13,6 @@ using spot_sim::Vec3;
 namespace {
 constexpr double kDt = 0.001;
 constexpr double kHeight = spot_sim::kNominalStandHeight;
-
-/// Foot center relative to the leg's neutral stance point, from joint angles.
-Vec3 ForwardKinematics(std::size_t leg, const spot_sim::LegJoints& q, double body_height) {
-  const double y_offset = (leg % 2 == 0 ? 1.0 : -1.0) * LegKinematics::kHipYOffset;
-  const auto planar = LegKinematics::ForwardKinematics({q.hip_y, q.knee});
-  // Rotate (y_offset, planar.z) about x by hip_x.
-  const double y = y_offset * std::cos(q.hip_x) - planar.z * std::sin(q.hip_x);
-  const double z = y_offset * std::sin(q.hip_x) + planar.z * std::cos(q.hip_x);
-  return Vec3{planar.x, y - y_offset, z + (body_height - LegKinematics::kFootRadius)};
-}
 
 void Simulate(TrotGait& gait, double seconds, double v_x, double v_y, double v_rot) {
   for (double t = 0.0; t < seconds; t += kDt) {
@@ -38,25 +29,7 @@ TEST(TrotGait, StandingStillKeepsFeetNeutral) {
     const auto offset = gait.FootOffsets()[leg];
     EXPECT_EQ(offset.x, 0.0);
     EXPECT_EQ(offset.z, 0.0);
-    const auto q = TrotGait::Solve(leg, offset, kHeight);
-    ASSERT_TRUE(q);
-    const auto stand = *LegKinematics::StandAngles(kHeight);
-    EXPECT_NEAR(q->hip_x, 0.0, 1e-9);
-    EXPECT_NEAR(q->hip_y, stand.hip_y, 1e-9);
-    EXPECT_NEAR(q->knee, stand.knee, 1e-9);
-  }
-}
-
-TEST(TrotGait, SolveReachesTheRequestedFootPosition) {
-  for (std::size_t leg = 0; leg < 4; ++leg) {
-    for (const Vec3 offset : {Vec3{0.15, 0.0, 0.0}, Vec3{-0.1, 0.08, 0.05}, Vec3{0.05, -0.1, 0.08}}) {
-      const auto q = TrotGait::Solve(leg, offset, kHeight);
-      ASSERT_TRUE(q) << "leg " << leg;
-      const auto foot = ForwardKinematics(leg, *q, kHeight);
-      EXPECT_NEAR(foot.x, offset.x, 1e-9) << "leg " << leg;
-      EXPECT_NEAR(foot.y, offset.y, 1e-9) << "leg " << leg;
-      EXPECT_NEAR(foot.z, offset.z, 1e-9) << "leg " << leg;
-    }
+    EXPECT_EQ(offset.y, 0.0);
   }
 }
 
@@ -122,8 +95,6 @@ TEST(TrotGait, FullSpeedStridesAreReachable) {
   TrotGait gait;
   for (int i = 0; i < 2000; ++i) {
     gait.Step(kDt, 1.6, 0.6, 1.2);
-    for (std::size_t leg = 0; leg < 4; ++leg) {
-      ASSERT_TRUE(TrotGait::Solve(leg, gait.FootOffsets()[leg], kHeight)) << "leg " << leg << " step " << i;
-    }
+    ASSERT_TRUE(spot_sim::Stance::Solve(kHeight, {}, gait.FootOffsets())) << "step " << i;
   }
 }

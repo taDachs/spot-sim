@@ -21,6 +21,7 @@ add_library(${PROJECT_NAME} SHARED
   src/power.cpp
   src/robot.cpp
   src/robot_state.cpp
+  src/stance.cpp
   src/time_sync.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
@@ -46,6 +47,7 @@ if(BUILD_TESTING)
     test/test_leg_kinematics.cpp
     test/test_power.cpp
     test/test_robot_state.cpp
+    test/test_stance.cpp
     test/test_time_sync.cpp)
   target_link_libraries(${PROJECT_NAME}_test ${PROJECT_NAME})
 endif()

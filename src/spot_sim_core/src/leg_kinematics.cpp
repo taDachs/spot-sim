@@ -42,6 +42,30 @@ std::optional<LegKinematics::Angles> LegKinematics::InverseKinematics(const Poin
   return Angles{std::remainder(hip_y, 2.0 * M_PI), knee};
 }
 
+Vec3 LegKinematics::ForwardLeg(std::size_t leg, const LegJoints& q) {
+  // hip_x rotates the hip_y offset and the sagittal leg together about x.
+  const double y_offset = SideY(leg) * kHipYOffset;
+  const Point planar = ForwardKinematics({q.hip_y, q.knee});
+  return Vec3{planar.x, y_offset * std::cos(q.hip_x) - planar.z * std::sin(q.hip_x),
+              y_offset * std::sin(q.hip_x) + planar.z * std::cos(q.hip_x)};
+}
+
+std::optional<LegJoints> LegKinematics::InverseLeg(std::size_t leg, const Vec3& foot) {
+  const double y_offset = SideY(leg) * kHipYOffset;
+  // In the y-z plane the foot is (y_offset, planar_z) rotated by hip_x.
+  const double planar_sq = foot.y * foot.y + foot.z * foot.z - y_offset * y_offset;
+  if (planar_sq <= 0.0) {
+    return std::nullopt;
+  }
+  const double planar_z = -std::sqrt(planar_sq);
+  const double hip_x = std::atan2(foot.z, foot.y) - std::atan2(planar_z, y_offset);
+  const auto sagittal = InverseKinematics({foot.x, planar_z});
+  if (!sagittal) {
+    return std::nullopt;
+  }
+  return LegJoints{std::remainder(hip_x, 2.0 * M_PI), sagittal->hip_y, sagittal->knee};
+}
+
 std::optional<LegKinematics::Angles> LegKinematics::StandAngles(double body_height) {
   return InverseKinematics(Point{0.0, -(body_height - kFootRadius)});
 }

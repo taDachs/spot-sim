@@ -332,3 +332,86 @@ TEST(Commands, StopZeroesVelocity) {
   EXPECT_EQ(locomotion.v_x, 0.0);
   EXPECT_EQ(locomotion.v_rot, 0.0);
 }
+
+namespace {
+/// MobilityParams as RobotCommandBuilder.mobility_params(body_height, footprint_R_body) builds them.
+api::spot::MobilityParams BodyParams(double height, double roll, double pitch, double yaw) {
+  api::spot::MobilityParams params;
+  auto* pose = params.mutable_body_control()->mutable_base_offset_rt_footprint()->add_points()->mutable_pose();
+  pose->mutable_position()->set_z(height);
+  const auto q = spot_sim::Quat::FromRpy(roll, pitch, yaw);
+  pose->mutable_rotation()->set_w(q.w);
+  pose->mutable_rotation()->set_x(q.x);
+  pose->mutable_rotation()->set_y(q.y);
+  pose->mutable_rotation()->set_z(q.z);
+  return params;
+}
+
+api::RobotCommandRequest StandWith(const api::spot::MobilityParams& params) {
+  auto request = Stand();
+  request.mutable_command()->mutable_synchronized_command()->mutable_mobility_command()->mutable_params()->PackFrom(
+      params);
+  return request;
+}
+}  // namespace
+
+TEST(Commands, StandAppliesBodyPosture) {
+  Powered robot;
+  robot.commands.Command(StandWith(BodyParams(-0.1, 0.1, -0.2, 0.3)), LeaseOk(), true, true, 0s);
+  const auto locomotion = robot.commands.Locomotion(true);
+  EXPECT_EQ(locomotion.mode, LocomotionMode::kStand);
+  EXPECT_NEAR(locomotion.body_height_offset, -0.1, 1e-12);
+  EXPECT_NEAR(locomotion.body_roll, 0.1, 1e-9);
+  EXPECT_NEAR(locomotion.body_pitch, -0.2, 1e-9);
+  EXPECT_NEAR(locomotion.body_yaw, 0.3, 1e-9);
+}
+
+TEST(Commands, BodyPostureIsSaturated) {
+  Powered robot;
+  robot.commands.Command(StandWith(BodyParams(-1.0, 0.0, 0.0, 1.2)), LeaseOk(), true, true, 0s);
+  const auto locomotion = robot.commands.Locomotion(true);
+  EXPECT_DOUBLE_EQ(locomotion.body_height_offset, spot_sim::BodyPosture::Min().height_offset);
+  EXPECT_DOUBLE_EQ(locomotion.body_yaw, spot_sim::BodyPosture::Max().yaw);
+}
+
+TEST(Commands, PlainStandAndSitResetPosture) {
+  Powered robot;
+  robot.commands.Command(StandWith(BodyParams(-0.1, 0.0, 0.2, 0.0)), LeaseOk(), true, true, 0s);
+  robot.commands.Command(Stand(), LeaseOk(), true, true, 0s);
+  EXPECT_EQ(robot.commands.Locomotion(true).body_height_offset, 0.0);
+  EXPECT_EQ(robot.commands.Locomotion(true).body_pitch, 0.0);
+
+  robot.commands.Command(StandWith(BodyParams(-0.1, 0.0, 0.2, 0.0)), LeaseOk(), true, true, 0s);
+  robot.commands.Command(Sit(), LeaseOk(), true, true, 0s);
+  EXPECT_EQ(robot.commands.Locomotion(true).body_height_offset, 0.0);
+}
+
+TEST(Commands, VelocityCarriesBodyPostureAndStopKeepsIt) {
+  Powered robot;
+  auto walk = Velocity(0.3, 0.0, 0.0, 2s);
+  walk.mutable_command()->mutable_synchronized_command()->mutable_mobility_command()->mutable_params()->PackFrom(
+      BodyParams(-0.12, 0.0, 0.0, 0.0));
+  robot.commands.Command(walk, LeaseOk(), true, true, 1s);
+  EXPECT_NEAR(robot.commands.Locomotion(true).body_height_offset, -0.12, 1e-12);
+  // The velocity command ends: the robot keeps standing low.
+  robot.commands.Step(2s, api::ESTOP_LEVEL_NONE, robot.power, robot.status);
+  EXPECT_EQ(robot.commands.Locomotion(true).mode, LocomotionMode::kStand);
+  EXPECT_NEAR(robot.commands.Locomotion(true).body_height_offset, -0.12, 1e-12);
+  api::RobotCommandRequest stop;
+  stop.mutable_command()->mutable_synchronized_command()->mutable_mobility_command()->mutable_stop_request();
+  robot.commands.Command(stop, LeaseOk(), true, true, 2s);
+  EXPECT_NEAR(robot.commands.Locomotion(true).body_height_offset, -0.12, 1e-12);
+}
+
+TEST(Commands, UnsetRotationMeansLevel) {
+  Powered robot;
+  api::spot::MobilityParams params;
+  params.mutable_body_control()->mutable_base_offset_rt_footprint()->add_points()->mutable_pose()->mutable_position()->set_z(
+      0.05);
+  robot.commands.Command(StandWith(params), LeaseOk(), true, true, 0s);
+  const auto locomotion = robot.commands.Locomotion(true);
+  EXPECT_NEAR(locomotion.body_height_offset, 0.05, 1e-12);
+  EXPECT_EQ(locomotion.body_roll, 0.0);
+  EXPECT_EQ(locomotion.body_pitch, 0.0);
+  EXPECT_EQ(locomotion.body_yaw, 0.0);
+}

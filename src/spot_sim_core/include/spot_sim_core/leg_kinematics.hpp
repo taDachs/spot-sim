@@ -1,10 +1,20 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <optional>
 #include <string>
 
+#include "spot_sim_core/geometry.hpp"
+
 namespace spot_sim {
+
+/// Joint positions of one leg.
+struct LegJoints {
+  double hip_x = 0.0;
+  double hip_y = 0.0;
+  double knee = 0.0;
+};
 
 /// Planar (sagittal) kinematics of one Spot leg with hip_x = 0, from the
 /// spot_description URDF: the knee sits at (0.025, -0.3205) in the upper-leg
@@ -49,6 +59,23 @@ struct LegKinematics {
   /// Height of the body origin above flat ground for legs at `q`
   /// (all four legs alike, foot spheres touching the ground).
   static double BodyHeight(const Angles& q) { return -ForwardKinematics(q).z + kFootRadius; }
+
+  // Whole legs, indexed fl, fr, hl, hr (Spot API order).
+
+  /// +1 for front legs, -1 for hind legs.
+  static double SideX(std::size_t leg) { return leg < 2 ? 1.0 : -1.0; }
+  /// +1 for left legs, -1 for right legs.
+  static double SideY(std::size_t leg) { return leg % 2 == 0 ? 1.0 : -1.0; }
+
+  /// The leg's hip_x joint in the body frame.
+  static Vec3 HipXJoint(std::size_t leg) { return Vec3{SideX(leg) * kHipX, SideY(leg) * kHipXJointY, 0.0}; }
+
+  /// Foot center relative to the leg's hip_x joint, in the body frame.
+  static Vec3 ForwardLeg(std::size_t leg, const LegJoints& q);
+
+  /// Joint positions putting the foot center at `foot_rt_hip_x` (body frame,
+  /// relative to the leg's hip_x joint). Empty if unreachable.
+  static std::optional<LegJoints> InverseLeg(std::size_t leg, const Vec3& foot_rt_hip_x);
 };
 
 /// Nominal standing height of the body origin above the ground [m].

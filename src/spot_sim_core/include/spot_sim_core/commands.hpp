@@ -8,9 +8,11 @@
 #include <bosdyn/api/estop.pb.h>
 #include <bosdyn/api/lease.pb.h>
 #include <bosdyn/api/robot_command.pb.h>
+#include <bosdyn/api/spot/robot_command.pb.h>
 
 #include "spot_sim_core/locomotion.hpp"
 #include "spot_sim_core/power.hpp"
+#include "spot_sim_core/stance.hpp"
 #include "spot_sim_core/time.hpp"
 
 namespace spot_sim {
@@ -29,8 +31,9 @@ struct VelocityLimits {
 /// LocomotionCommand for the base, and derives command feedback from the
 /// base's LocomotionStatus.
 ///
-/// Supported so far: mobility stand / sit / stop / se2_velocity, full-body
-/// stop and safe power off. Also implements the robot-side behaviors that sequence
+/// Supported so far: mobility stand / sit / stop / se2_velocity (with
+/// MobilityParams body_control posture and velocity limits), full-body stop
+/// and safe power off. Also implements the robot-side behaviors that sequence
 /// locomotion and power: safe power off (sit, then cut) and the
 /// SETTLE_THEN_CUT E-Stop (sit, then cut, or cut after a timeout).
 ///
@@ -70,9 +73,12 @@ class CommandSystem {
     RobotTime end_time{0};   ///< velocity commands
   };
 
-  bosdyn::api::RobotCommandResponse Velocity(const bosdyn::api::MobilityCommand::Request& mobility,
-                                             bool clock_synced, RobotTime now, double odom_yaw,
+  bosdyn::api::RobotCommandResponse Velocity(const bosdyn::api::SE2VelocityCommand::Request& request,
+                                             const bosdyn::api::spot::MobilityParams& params, bool clock_synced,
+                                             RobotTime now, double odom_yaw,
                                              bosdyn::api::RobotCommandResponse response);
+  /// Body posture target from body_control (stand and velocity commands).
+  void SetPosture(const BodyPosture& posture);
 
   uint32_t Issue(Kind kind, LocomotionMode mode);
   void OverrideActive();

@@ -2,18 +2,10 @@
 
 #include <array>
 #include <cstddef>
-#include <optional>
 
 #include "spot_sim_core/geometry.hpp"
 
 namespace spot_sim {
-
-/// Joint positions of one leg.
-struct LegJoints {
-  double hip_x = 0.0;
-  double hip_y = 0.0;
-  double knee = 0.0;
-};
 
 /// A simple trot for animating a kinematic base: diagonal leg pairs
 /// (fl + hr, fr + hl) alternate between stance and swing. Stance feet move
@@ -38,7 +30,7 @@ class TrotGait {
   void Step(double dt, double v_x, double v_y, double v_rot);
 
   /// Each foot's displacement from its neutral stance point below the hip
-  /// (body frame). All zero when the robot stands still.
+  /// (footprint frame; see Stance::Solve). All zero when the robot stands still.
   std::array<Vec3, 4> FootOffsets() const;
 
   /// True for legs currently carrying the body (not swinging).
@@ -46,11 +38,6 @@ class TrotGait {
 
   /// True while the gait is (fading) active.
   bool Active() const { return weight_ > 0.0; }
-
-  /// Joint positions placing `leg`'s foot `offset` away from its neutral
-  /// stance point, for a body origin `body_height` above flat ground.
-  /// Empty if out of reach.
-  static std::optional<LegJoints> Solve(std::size_t leg, const Vec3& offset, double body_height);
 
  private:
   double LegPhase(std::size_t leg) const;

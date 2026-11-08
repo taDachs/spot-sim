@@ -5,6 +5,8 @@
 
 #include <bosdyn/api/spot/robot_command.pb.h>
 
+#include "spot_sim_core/stance.hpp"
+
 namespace spot_sim {
 
 namespace api = bosdyn::api;
@@ -29,6 +31,24 @@ VelocityLimits LimitsFrom(const api::spot::MobilityParams& params) {
     }
   }
   return limits;
+}
+
+/// Body posture requested by body_control (base_offset_rt_footprint; its
+/// final point, held). Anything else means the default posture. Saturated.
+BodyPosture PostureFrom(const api::spot::MobilityParams& params) {
+  if (!params.has_body_control() || !params.body_control().has_base_offset_rt_footprint()) {
+    return {};
+  }
+  const auto& points = params.body_control().base_offset_rt_footprint().points();
+  if (points.empty()) {
+    return {};
+  }
+  const auto& pose = points.rbegin()->pose();
+  const auto& r = pose.rotation();
+  // An unset rotation (all zero) means no rotation.
+  const Quat rotation =
+      (r.w() == 0.0 && r.x() == 0.0 && r.y() == 0.0 && r.z() == 0.0) ? Quat{} : Quat{r.w(), r.x(), r.y(), r.z()}.Normalized();
+  return BodyPosture{pose.position().z(), rotation.Roll(), rotation.Pitch(), rotation.Yaw()}.Clamped();
 }
 
 double Clamp(double value, double low, double high) {
@@ -116,14 +136,24 @@ api::RobotCommandResponse CommandSystem::Command(const api::RobotCommandRequest&
     if (!motors_on) {
       return reject(api::RobotCommandResponse::STATUS_NOT_POWERED_ON, "motors are off");
     }
+    api::spot::MobilityParams params;
+    if (mobility.has_params() && !mobility.params().UnpackTo(&params)) {
+      return reject(api::RobotCommandResponse::STATUS_INVALID_REQUEST, "params is not a spot.MobilityParams");
+    }
+    // Locomotion hints and stairs mode are accepted; the kinematic base walks
+    // the same way regardless.
     if (mobility.has_stand_request()) {
-      return accept(Kind::kStand, LocomotionMode::kStand);
+      auto accepted = accept(Kind::kStand, LocomotionMode::kStand);
+      SetPosture(PostureFrom(params));
+      return accepted;
     }
     if (mobility.has_sit_request()) {
-      return accept(Kind::kSit, LocomotionMode::kSit);
+      auto accepted = accept(Kind::kSit, LocomotionMode::kSit);
+      SetPosture({});
+      return accepted;
     }
     if (mobility.has_se2_velocity_request()) {
-      return Velocity(mobility, clock_synced, now, odom_yaw, std::move(response));
+      return Velocity(mobility.se2_velocity_request(), params, clock_synced, now, odom_yaw, std::move(response));
     }
     return reject(api::RobotCommandResponse::STATUS_UNSUPPORTED, "mobility command not simulated yet");
   }
@@ -131,14 +161,21 @@ api::RobotCommandResponse CommandSystem::Command(const api::RobotCommandRequest&
   return reject(api::RobotCommandResponse::STATUS_INVALID_REQUEST, "empty command");
 }
 
-api::RobotCommandResponse CommandSystem::Velocity(const api::MobilityCommand::Request& mobility, bool clock_synced,
+void CommandSystem::SetPosture(const BodyPosture& posture) {
+  locomotion_.body_height_offset = posture.height_offset;
+  locomotion_.body_roll = posture.roll;
+  locomotion_.body_pitch = posture.pitch;
+  locomotion_.body_yaw = posture.yaw;
+}
+
+api::RobotCommandResponse CommandSystem::Velocity(const api::SE2VelocityCommand::Request& request,
+                                                  const api::spot::MobilityParams& params, bool clock_synced,
                                                   RobotTime now, double odom_yaw, api::RobotCommandResponse response) {
   const auto reject = [&](api::RobotCommandResponse::Status status, const char* message) {
     response.set_status(status);
     response.set_message(message);
     return response;
   };
-  const auto& request = mobility.se2_velocity_request();
   if (!clock_synced) {
     return reject(api::RobotCommandResponse::STATUS_NO_TIMESYNC, "clock_identifier has no established time sync");
   }
@@ -163,14 +200,11 @@ api::RobotCommandResponse CommandSystem::Velocity(const api::MobilityCommand::Re
     return reject(api::RobotCommandResponse::STATUS_UNKNOWN_FRAME, "se2_frame_name must be body, flat_body, odom or vision");
   }
 
-  api::spot::MobilityParams params;
-  if (mobility.has_params() && !mobility.params().UnpackTo(&params)) {
-    return reject(api::RobotCommandResponse::STATUS_INVALID_REQUEST, "params is not a spot.MobilityParams");
-  }
   const VelocityLimits limits = LimitsFrom(params);
 
   const uint32_t id = Issue(Kind::kVelocity, LocomotionMode::kVelocity);
   records_[id].end_time = end_time;
+  SetPosture(PostureFrom(params));
   locomotion_.v_x = Clamp(v_x, limits.min_x, limits.max_x);
   locomotion_.v_y = Clamp(v_y, limits.min_y, limits.max_y);
   locomotion_.v_rot = Clamp(request.velocity().angular(), limits.min_rot, limits.max_rot);
