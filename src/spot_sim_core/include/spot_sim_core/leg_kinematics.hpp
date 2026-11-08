@@ -19,7 +19,9 @@ struct LegKinematics {
 
   /// Hip_y joint positions in the body frame (hip_x offset + hip_y offset).
   static constexpr double kHipX = 0.29785;
-  static constexpr double kHipY = 0.055 + 0.110945;
+  static constexpr double kHipXJointY = 0.055;    ///< hip_x joint, lateral
+  static constexpr double kHipYOffset = 0.110945;  ///< hip_y joint, lateral from hip_x
+  static constexpr double kHipY = kHipXJointY + kHipYOffset;
 
   struct Point {
     double x = 0.0;

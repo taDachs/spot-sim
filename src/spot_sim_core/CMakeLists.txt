@@ -15,6 +15,7 @@ add_library(${PROJECT_NAME} SHARED
   src/commands.cpp
   src/directory.cpp
   src/estop.cpp
+  src/gait.cpp
   src/lease.cpp
   src/leg_kinematics.cpp
   src/power.cpp
@@ -40,6 +41,7 @@ if(BUILD_TESTING)
     test/test_commands.cpp
     test/test_directory.cpp
     test/test_estop.cpp
+    test/test_gait.cpp
     test/test_lease.cpp
     test/test_leg_kinematics.cpp
     test/test_power.cpp

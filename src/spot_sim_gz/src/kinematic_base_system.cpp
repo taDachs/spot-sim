@@ -13,7 +13,8 @@
 //
 // Walking: while standing, the body velocity ramps toward the commanded
 // velocity (bounded by the command's acceleration limits) and the planar pose
-// is integrated in simulation time. The legs do not step (yet).
+// is integrated in simulation time. The legs trot along (spot_sim::TrotGait),
+// purely for looks: stance feet stay put on the ground, swing feet lift.
 
 #include <algorithm>
 #include <array>
@@ -35,6 +36,7 @@
 #include <gz/sim/components/LinearVelocityCmd.hh>
 #include <sdf/Element.hh>
 
+#include <spot_sim_core/gait.hpp>
 #include <spot_sim_core/leg_kinematics.hpp>
 
 #include "spot_sim_gz/components.hpp"
@@ -59,11 +61,11 @@ class KinematicBaseSystem : public gz::sim::System,
     }
     stand_duration_ = sdf->Get<double>("stand_duration", stand_duration_).first;
     collapse_duration_ = sdf->Get<double>("collapse_duration", collapse_duration_).first;
-    const double stand_height = sdf->Get<double>("stand_height", spot_sim::kNominalStandHeight).first;
+    stand_height_ = sdf->Get<double>("stand_height", spot_sim::kNominalStandHeight).first;
 
-    const auto stand = LegKinematics::StandAngles(stand_height);
+    const auto stand = LegKinematics::StandAngles(stand_height_);
     if (!stand) {
-      gzerr << "[KinematicBaseSystem] stand height " << stand_height << " m is not reachable\n";
+      gzerr << "[KinematicBaseSystem] stand height " << stand_height_ << " m is not reachable\n";
       return;
     }
     stand_ = *stand;
@@ -125,6 +127,7 @@ class KinematicBaseSystem : public gz::sim::System,
   void Advance(const spot_sim::LocomotionCommand& command, double dt) {
     AdvancePosture(command, dt);
     AdvanceVelocity(command, dt);
+    gait_.Step(dt, v_x_, v_y_, v_rot_);
   }
 
   void AdvanceVelocity(const spot_sim::LocomotionCommand& command, double dt) {
@@ -172,16 +175,34 @@ class KinematicBaseSystem : public gz::sim::System,
     progress_ = standing_target_ ? std::min(1.0, progress_ + step) : std::max(0.0, progress_ - step);
   }
 
-  void Apply(gz::sim::EntityComponentManager& ecm) {
+  /// Leg joints: the trot while standing and walking, otherwise the
+  /// sit <-> stand blend.
+  std::array<spot_sim::LegJoints, 4> LegPose(double& height) const {
+    std::array<spot_sim::LegJoints, 4> legs;
+    if (progress_ >= 1.0 && gait_.Active()) {
+      height = stand_height_;
+      const auto offsets = gait_.FootOffsets();
+      for (std::size_t leg = 0; leg < 4; ++leg) {
+        legs[leg] = spot_sim::TrotGait::Solve(leg, offsets[leg], stand_height_)
+                        .value_or(spot_sim::LegJoints{0.0, stand_.hip_y, stand_.knee});
+      }
+      return legs;
+    }
     // Smoothstep for a gentle start and stop of the motion.
     const double s = progress_ * progress_ * (3.0 - 2.0 * progress_);
     const LegKinematics::Angles q{sit_.hip_y + s * (stand_.hip_y - sit_.hip_y), sit_.knee + s * (stand_.knee - sit_.knee)};
-    const double height = LegKinematics::BodyHeight(q);
+    height = LegKinematics::BodyHeight(q);
+    legs.fill(spot_sim::LegJoints{0.0, q.hip_y, q.knee});
+    return legs;
+  }
 
+  void Apply(gz::sim::EntityComponentManager& ecm) {
+    double height = 0.0;
+    const auto legs = LegPose(height);
     for (std::size_t leg = 0; leg < 4; ++leg) {
-      joints_[3 * leg + 0].ResetPosition(ecm, {0.0});
-      joints_[3 * leg + 1].ResetPosition(ecm, {q.hip_y});
-      joints_[3 * leg + 2].ResetPosition(ecm, {q.knee});
+      joints_[3 * leg + 0].ResetPosition(ecm, {legs[leg].hip_x});
+      joints_[3 * leg + 1].ResetPosition(ecm, {legs[leg].hip_y});
+      joints_[3 * leg + 2].ResetPosition(ecm, {legs[leg].knee});
       for (std::size_t j = 0; j < 3; ++j) {
         joints_[3 * leg + j].ResetVelocity(ecm, {0.0});
       }
@@ -214,8 +235,10 @@ class KinematicBaseSystem : public gz::sim::System,
 
   double stand_duration_ = 1.5;     ///< sit <-> stand [s]
   double collapse_duration_ = 0.4;  ///< folding when motor power is lost [s]
+  double stand_height_ = spot_sim::kNominalStandHeight;
   LegKinematics::Angles sit_;
   LegKinematics::Angles stand_;
+  spot_sim::TrotGait gait_;
 
   double x_ = 0.0, y_ = 0.0, yaw_ = 0.0;
   double v_x_ = 0.0, v_y_ = 0.0, v_rot_ = 0.0;  ///< body-frame velocity
