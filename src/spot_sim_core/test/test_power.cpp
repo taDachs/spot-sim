@@ -51,6 +51,9 @@ TEST(Power, EstopCutsMotorsAndFailsPendingPowerOn) {
   power.Command(Request(api::PowerCommandRequest::REQUEST_ON_MOTORS), api::ESTOP_LEVEL_NONE, 1s);
   power.Step(api::ESTOP_LEVEL_NONE, 2s);
   ASSERT_TRUE(power.MotorsOn());
+  // Settle-then-cut leaves a powered robot to sit down first (CommandSystem).
+  power.Step(api::ESTOP_LEVEL_SETTLE_THEN_CUT, 2500ms);
+  EXPECT_TRUE(power.MotorsOn());
   power.Step(api::ESTOP_LEVEL_CUT, 3s);
   EXPECT_FALSE(power.MotorsOn());
 }

@@ -2,16 +2,17 @@
 
 #include <chrono>
 
+#include "spot_sim_core/leg_kinematics.hpp"
+
 namespace spot_sim {
 
 namespace {
 // Sitting pose: legs folded, body resting low on the ground.
-constexpr double kSitHipY = 1.20;
-constexpr double kSitKnee = -2.70;
-constexpr double kSitBodyHeight = 0.15;
-// Hip offsets of Spot's legs in the body frame (from spot_description).
-constexpr double kHipX = 0.29785;
-constexpr double kHipY = 0.05500 + 0.110945;
+const double kSitHipY = LegKinematics::SitAngles().hip_y;
+const double kSitKnee = LegKinematics::SitAngles().knee;
+const double kSitBodyHeight = LegKinematics::BodyHeight(LegKinematics::SitAngles());
+constexpr double kHipX = LegKinematics::kHipX;
+constexpr double kHipY = LegKinematics::kHipY;
 
 void SetDouble(google::protobuf::DoubleValue* field, double value) { field->set_value(value); }
 

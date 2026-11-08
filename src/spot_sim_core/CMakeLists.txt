@@ -12,9 +12,11 @@ find_package(spot_sim_api_protos REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
   src/api_server.cpp
+  src/commands.cpp
   src/directory.cpp
   src/estop.cpp
   src/lease.cpp
+  src/leg_kinematics.cpp
   src/power.cpp
   src/robot.cpp
   src/robot_state.cpp
@@ -35,9 +37,11 @@ if(BUILD_TESTING)
   # credentials) in the environment; it skips otherwise.
   ament_add_gtest(${PROJECT_NAME}_test
     test/test_api_server.cpp
+    test/test_commands.cpp
     test/test_directory.cpp
     test/test_estop.cpp
     test/test_lease.cpp
+    test/test_leg_kinematics.cpp
     test/test_power.cpp
     test/test_robot_state.cpp
     test/test_time_sync.cpp)

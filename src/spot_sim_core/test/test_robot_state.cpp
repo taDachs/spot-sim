@@ -3,6 +3,7 @@
 #include <set>
 #include <string>
 
+#include "spot_sim_core/leg_kinematics.hpp"
 #include "spot_sim_core/robot_state.hpp"
 
 using namespace std::chrono_literals;
@@ -28,8 +29,9 @@ TEST(RobotState, FrameTreeIsRootedAtBody) {
   EXPECT_EQ(edges.at("vision").parent_frame_name(), "body");
   EXPECT_EQ(edges.at("flat_body").parent_frame_name(), "body");
   EXPECT_EQ(edges.at("gpe").parent_frame_name(), "odom");
-  // Body sits 0.15 m above odom, so odom is 0.15 m below the body.
-  EXPECT_NEAR(edges.at("odom").parent_tform_child().position().z(), -0.15, 1e-9);
+  // The sitting body is above the odom ground plane, so odom is below the body.
+  const double sit_height = spot_sim::LegKinematics::BodyHeight(spot_sim::LegKinematics::SitAngles());
+  EXPECT_NEAR(edges.at("odom").parent_tform_child().position().z(), -sit_height, 1e-9);
 }
 
 TEST(RobotState, CarriesFieldsTheDriverRequires) {

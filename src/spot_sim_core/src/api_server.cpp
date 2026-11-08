@@ -14,6 +14,7 @@
 #include <bosdyn/api/lease_service.grpc.pb.h>
 #include <bosdyn/api/license_service.grpc.pb.h>
 #include <bosdyn/api/power_service.grpc.pb.h>
+#include <bosdyn/api/robot_command_service.grpc.pb.h>
 #include <bosdyn/api/robot_id_service.grpc.pb.h>
 #include <bosdyn/api/robot_state_service.grpc.pb.h>
 #include <bosdyn/api/time_sync_service.grpc.pb.h>
@@ -294,6 +295,45 @@ class EstopServiceImpl final : public api::EstopService::Service {
   Robot& robot_;
 };
 
+class RobotCommandServiceImpl final : public api::RobotCommandService::Service {
+ public:
+  explicit RobotCommandServiceImpl(Robot& robot) : robot_(robot) {}
+
+  grpc::Status RobotCommand(grpc::ServerContext*, const api::RobotCommandRequest* request,
+                            api::RobotCommandResponse* response) override {
+    return Handle(robot_, request, response, [&] {
+      const bool clock_synced = robot_.time_sync().IsSynced(request->clock_identifier());
+      *response = robot_.WithFirmware([&](Firmware& fw) {
+        const auto lease = fw.lease.Use(request->lease(), Robot::WallNow());
+        return fw.commands.Command(*request, lease, fw.power.MotorsOn(), clock_synced, robot_.Now());
+      });
+    });
+  }
+
+  grpc::Status RobotCommandFeedback(grpc::ServerContext*, const api::RobotCommandFeedbackRequest* request,
+                                    api::RobotCommandFeedbackResponse* response) override {
+    return Handle(robot_, request, response, [&] {
+      *response = robot_.WithFirmware([&](Firmware& fw) { return fw.commands.Feedback(*request, fw.locomotion); });
+    });
+  }
+
+  grpc::Status ClearBehaviorFault(grpc::ServerContext*, const api::ClearBehaviorFaultRequest* request,
+                                  api::ClearBehaviorFaultResponse* response) override {
+    return Handle(robot_, request, response, [&] {
+      *response = robot_.WithFirmware([&](Firmware& fw) {
+        api::ClearBehaviorFaultResponse result;
+        *result.mutable_lease_use_result() = fw.lease.Use(request->lease(), Robot::WallNow());
+        // No behavior faults are simulated, so there is never one to clear.
+        result.set_status(api::ClearBehaviorFaultResponse::STATUS_NOT_CLEARED);
+        return result;
+      });
+    });
+  }
+
+ private:
+  Robot& robot_;
+};
+
 class PowerServiceImpl final : public api::PowerService::Service {
  public:
   explicit PowerServiceImpl(Robot& robot) : robot_(robot) {}
@@ -374,6 +414,7 @@ SpotApiServer::SpotApiServer(Robot& robot, const ServerConfig& config) {
   services_.push_back(std::make_unique<LeaseServiceImpl>(robot));
   services_.push_back(std::make_unique<EstopServiceImpl>(robot));
   services_.push_back(std::make_unique<PowerServiceImpl>(robot));
+  services_.push_back(std::make_unique<RobotCommandServiceImpl>(robot));
   services_.push_back(std::make_unique<WorldObjectServiceImpl>(robot));
 
   grpc::ServerBuilder builder;

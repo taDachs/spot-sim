@@ -7,8 +7,10 @@
 
 #include <bosdyn/api/robot_state.pb.h>
 
+#include "spot_sim_core/commands.hpp"
 #include "spot_sim_core/estop.hpp"
 #include "spot_sim_core/lease.hpp"
+#include "spot_sim_core/locomotion.hpp"
 #include "spot_sim_core/power.hpp"
 #include "spot_sim_core/robot_state.hpp"
 #include "spot_sim_core/time.hpp"
@@ -28,6 +30,8 @@ struct Firmware {
   LeaseManager lease;
   EstopSystem estop;
   PowerSystem power;
+  CommandSystem commands;
+  LocomotionStatus locomotion;  ///< last status reported by the base
 };
 
 /// The simulated robot's shared state. The simulation thread advances the
@@ -46,8 +50,14 @@ class Robot {
   static WallTime WallNow() { return std::chrono::steady_clock::now(); }
 
   /// Called by the simulation every step: advances the robot clock and the
-  /// firmware (power transitions, E-Stop timeouts).
+  /// firmware (power transitions, E-Stop timeouts, command sequencing).
   void Step(RobotTime now);
+
+  /// Target for the locomotion base (read by the simulation each step).
+  LocomotionCommand Locomotion();
+
+  /// Status reported by the locomotion base (written by the simulation).
+  void SetLocomotionStatus(const LocomotionStatus& status);
 
   /// Replace the simulation-side snapshot (acquisition time set by caller).
   void SetSnapshot(RobotSnapshot snapshot);

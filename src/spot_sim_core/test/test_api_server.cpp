@@ -110,15 +110,16 @@ TEST_F(ApiServerTest, TimeSyncUsesRobotClock) {
 }
 
 TEST_F(ApiServerTest, UnimplementedRpcsFailFast) {
-  // RobotCommandService is listed in the directory but not served yet: the
-  // call must fail immediately instead of hanging.
-  auto stub = bosdyn::api::RobotCommandService::NewStub(Channel("api.spot.robot"));
+  // RobotCommandService.ClearBehaviorFault is served, but the
+  // RobotCommandStreaming service is not: calls must fail immediately
+  // instead of hanging.
+  auto stub = bosdyn::api::RobotCommandStreamingService::NewStub(Channel("api.spot.robot"));
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + 5s);
-  bosdyn::api::RobotCommandRequest request;
-  bosdyn::api::RobotCommandResponse response;
-  const auto status = stub->RobotCommand(&context, request, &response);
-  EXPECT_EQ(status.error_code(), grpc::StatusCode::UNIMPLEMENTED);
+  bosdyn::api::JointControlStreamResponse response;
+  auto writer = stub->JointControlStream(&context, &response);
+  writer->WritesDone();
+  EXPECT_EQ(writer->Finish().error_code(), grpc::StatusCode::UNIMPLEMENTED);
 }
 
 TEST_F(ApiServerTest, ServesRobotState) {

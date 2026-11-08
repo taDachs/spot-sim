@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-jazzy-gz-tools-vendor \
       ros-jazzy-ros-gz-bridge \
       ros-jazzy-ros-gz-sim \
+      ros-jazzy-xacro \
     && rm -rf /var/lib/apt/lists/*
 
 # Spot API definitions, pinned to the SDK version the driver targets.
@@ -33,6 +34,9 @@ ARG COLCON_ARGS="--cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo"
 COPY src/spot_sim_api_protos src/spot_sim_api_protos
 RUN source /opt/ros/jazzy/setup.bash \
     && colcon build --packages-select spot_sim_api_protos ${COLCON_ARGS}
+
+# Robot model (meshes, xacro) from the driver repository.
+COPY spot_ros2/spot_description src/spot_description
 
 COPY src/ src/
 RUN source /opt/ros/jazzy/setup.bash \

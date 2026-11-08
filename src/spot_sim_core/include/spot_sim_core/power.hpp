@@ -13,8 +13,9 @@
 namespace spot_sim {
 
 /// Motor power state machine. Powering on/off takes a little robot (sim)
-/// time, during which feedback reports STATUS_IN_PROGRESS. Any E-Stop level
-/// other than NONE cuts motor power.
+/// time, during which feedback reports STATUS_IN_PROGRESS. E-Stop CUT cuts
+/// motor power at once; SETTLE_THEN_CUT is sequenced by CommandSystem (sit,
+/// then Cut()). Power-on is refused unless the E-Stop level is NONE.
 ///
 /// Lease checks happen before Command() is called. Not thread-safe; Robot
 /// serializes access.

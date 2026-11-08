@@ -97,7 +97,11 @@ void PowerSystem::Cut(api::PowerCommandStatus reason_for_pending) {
 }
 
 void PowerSystem::Step(api::EstopStopLevel estop_level, RobotTime now) {
-  if (estop_level != api::ESTOP_LEVEL_NONE && phase_ != Phase::kOff) {
+  // CUT stops immediately. SETTLE_THEN_CUT lets a powered robot sit down
+  // first (CommandSystem cuts afterwards) but aborts a power-on in progress.
+  const bool cut = estop_level != api::ESTOP_LEVEL_NONE && estop_level != api::ESTOP_LEVEL_SETTLE_THEN_CUT;
+  const bool settle = estop_level == api::ESTOP_LEVEL_SETTLE_THEN_CUT;
+  if ((cut && phase_ != Phase::kOff) || (settle && phase_ == Phase::kPoweringOn)) {
     Cut(api::STATUS_ESTOPPED);
     return;
   }
