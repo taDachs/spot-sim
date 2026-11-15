@@ -18,17 +18,22 @@ find a new gap, add it.
 
 Code pointers: API semantics in `src/spot_sim_core` (`api_server.cpp`,
 `commands.cpp`, `robot_state.cpp`, `images.cpp`), body and arm motion in the
-`src/spot_sim_gz` plugins.
+`src/spot_sim_gz` plugins, the local planner in `src/spot_sim_planning`. How
+the robot moves and what collides with what: `docs/robot_model.md`.
 
 ## Locomotion and body
 
 | Missing | Current behaviour | Notes |
 |---|---|---|
-| `se2_trajectory_request` (driver: `trajectory` action, `navigate_to` goals in odom/vision) | UNSUPPORTED | Needs a go-to mode in `LocomotionCommand` plus a base controller; also needed for `WalkToObject*`. |
+| `se2_trajectory_request` trajectories (driver: `trajectory` action) | The local planner walks to the **last point**; earlier points, their times and `interpolation` are ignored. Reached within 0.1 m / 0.1 rad; `precise_positioning` makes no difference | Following timed points would need a trajectory-tracking cost in MPPI |
+| GraphNav `navigate_to` | Not simulated (see Services) | Needs a global map and graph |
 | Stance, follow-arm, battery-change pose, constrained manipulation | UNSUPPORTED | |
-| Locomotion hints (`locomotion_mode`), stairs mode, swing height, terrain and obstacle params | Accepted, no effect | The kinematic base always trots the same way. |
+| Locomotion hints (`locomotion_mode`), stairs mode, swing height, terrain params, foot obstacle params | Accepted, no effect | The kinematic base always trots the same way. |
+| Body obstacle avoidance from vision | The local planner avoids obstacles from **ground truth**: every model's collision shapes (no blind spots, no stereo noise). `obstacle_avoidance_padding` defaults to 0.1 m when no `obstacle_params` are given (the robot's real default isn't documented); `disable_vision_body_obstacle_avoidance` turns it off | Camera-fed maps could plug into the same height map (`spot_sim_planning::HeightMap`) |
+| Mesh and heightmap collision geometry in the planner's map | Ignored (with a warning); boxes, spheres, cylinders, capsules, ellipsoids (as boxes) and planes are mapped | `local_planner_system.cpp` `MakeCollider` |
+| Moving obstacles | Redrawn into the map at 20 Hz; the planner reacts by replanning, without predicting their motion | |
 | Body-control trajectories | Only the last point of `base_offset_rt_footprint` is used | No timing; the posture ramps at a fixed rate. |
-| Collisions, terrain, stairs, slopes | The robot walks through objects; the ground is flat at z = 0 | `KinematicBaseSystem` turns physics off for the robot. Foot contact and `gpe` assume flat ground. |
+| Collisions, terrain, stairs, slopes | The robot itself has no collisions: with avoidance on, the planner keeps it clear of obstacles; with it off, the robot walks through them. The ground is flat at z = 0 for the base (the planner's map does see steps and slopes) | `KinematicBaseSystem` turns physics off for the robot; the RL base (`docs/handoff/rl_locomotion.md`) brings physics. Foot contact and `gpe` assume flat ground. |
 | Falling, self-right from a fall | Never falls; self-right just sits | |
 | Behavior / system / service faults | Always empty; `ClearBehaviorFault` returns NOT_CLEARED | |
 | Vision odometry drift | `vision` == `odom` | |
@@ -39,7 +44,7 @@ Code pointers: API semantics in `src/spot_sim_core` (`api_server.cpp`,
 
 | Missing | Current behaviour | Planned |
 |---|---|---|
-| Grasping: `ManipulationApi` (PickObject*, WalkToObject*), `ManipulationApiFeedback` | UNIMPLEMENTED | Slice 11 (kinematic attach); WalkToObject needs the go-to base mode |
+| Grasping: `ManipulationApi` (PickObject*, WalkToObject*), `ManipulationApiFeedback` | UNIMPLEMENTED | Slice 12 (kinematic attach); walking to objects can use the local planner's goals |
 | Arm surface contact (driver: `arm_surface_contact` action) | UNIMPLEMENTED | Not planned |
 | Arm impedance, drag, force / wrench trajectories (`force_trajectory`) | UNSUPPORTED | Not planned |
 | Arm collisions (with the body, itself, the world) | None | |

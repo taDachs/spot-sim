@@ -138,6 +138,7 @@ services:
       POINT_CLOUDS: ${POINT_CLOUDS:-false}
       RGB_CAMERAS: ${RGB_CAMERAS:-true}
       ARM: ${ARM:-false}
+      WORLD: ${WORLD:-empty}
     volumes:
       - ./tests:/tests:ro
       - reports:/reports:ro

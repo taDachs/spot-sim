@@ -53,10 +53,11 @@
     </model>
 
 
-    <!-- Things for the cameras to look at (the kinematic base walks through them). -->
+    <!-- Things for the cameras to look at, and obstacles for the local planner
+         (tests/e2e/test_navigation.py); clear of where the driving tests walk. -->
     <model name="red_box">
       <static>true</static>
-      <pose>2.5 0.0 0.4 0 0 0.3</pose>
+      <pose>3.2 0.0 0.4 0 0 0.3</pose>
       <link name="link">
         <collision name="collision"><geometry><box><size>0.8 0.8 0.8</size></box></geometry></collision>
         <visual name="visual">
