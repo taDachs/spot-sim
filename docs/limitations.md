@@ -56,6 +56,7 @@ Code pointers: API semantics in `src/spot_sim_core` (`api_server.cpp`,
 | Gaze: target and tool trajectories over time | Only their last point is used; without a tool trajectory the hand keeps its place relative to the body | |
 | Unreachable poses | The arm stops at the last reachable setpoint and reports STALLED; no body assist, no planning around joint limits | |
 | Arm velocity: angular velocity "relative to odom", acceleration limits | Angular velocity is applied in the hand frame relative to the body; no acceleration limit | |
+| Arm and gripper that don't settle on their setpoint (a physics or learned controller, a gripper closing on an object) | An arm command finishes only once every measured joint is within 0.01 rad of its setpoint (`kArmReachedTolerance`, `arm.hpp`); a gripper command likewise. Until then it stays STATUS_IN_PROGRESS, without a timeout, so a client waiting on the feedback (such as the driver's arm actions) keeps waiting. Sitting and SETTLE_THEN_CUT also wait for the arm to be within 0.05 rad of stow (the E-Stop cuts power after its settle timeout anyway). The kinematic arm plugin always gets there | Before slice 11 (a closed gripper stops at the object) or a physics arm: count a joint as settled once it stops moving, or give up after a timeout and report STALLED |
 
 ## Cameras (`IMAGES=true`)
 
@@ -79,6 +80,13 @@ Code pointers: API semantics in `src/spot_sim_core` (`api_server.cpp`,
 | SpotCheck, Mission (autowalk) | Listed in the directory so clients can be created; RPCs UNIMPLEMENTED |
 | InverseKinematics (body) | Always NO_SOLUTION_FOUND |
 | Payloads, data acquisition, network compute, logging | Not in the directory |
+
+## Leases
+
+| Missing | Current behaviour |
+|---|---|
+| Separate leases per resource (`body`, `mobility`, `full-arm`, `arm`, `gripper`) | One lease for the whole robot: all resources share one owner and one sequence number (`spot_sim_core/src/lease.cpp`). Acquiring or taking any resource takes all of them, so two clients can't hold `body` and `arm` side by side, and any valid resource's lease authorizes every command (a `gripper` lease can drive the legs). `ListLeases` shows the full resource tree, every entry with the same lease and owner |
+| Sublease bookkeeping | A lease with extra sequence entries (a sublease) is accepted whenever its first entry is current; the sim doesn't track who holds which sublease or whether it was returned |
 
 ## Timing and infrastructure
 
