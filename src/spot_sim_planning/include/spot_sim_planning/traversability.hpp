@@ -41,7 +41,8 @@ struct Traversability {
   Grid<float> step;
 };
 
-/// Classifies every cell of `heights` (NaN = unknown).
+/// Classifies every cell of `heights` (NaN = unknown, -inf = no surface: an
+/// obstacle).
 Traversability ComputeTraversability(const Grid<float>& heights, const TraversabilityParams& params = {});
 
 }  // namespace spot_sim::planning

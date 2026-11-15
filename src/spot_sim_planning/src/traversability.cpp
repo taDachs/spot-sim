@@ -24,7 +24,7 @@ PlaneFit FitPlane(const Grid<float>& heights, CellIndex center, int k) {
       const CellIndex c{center.x + dx, center.y + dy};
       if (!g.Contains(c)) continue;
       const double z = heights.at(c);
-      if (std::isnan(z)) continue;
+      if (!std::isfinite(z)) continue;  // unknown, or no surface (kNoSurface)
       const double x = dx, y = dy;
       sxx += x * x, sxy += x * y, syy += y * y, sx += x, sy += y, sz += z, sxz += x * z, syz += y * z, szz += z * z;
       ++n;
@@ -76,6 +76,10 @@ Traversability ComputeTraversability(const Grid<float>& heights, const Traversab
     const CellIndex c = g.FromIndex(i);
     if (std::isnan(heights[i])) {
       t.obstacle[i] = params.unknown_is_obstacle ? 1 : 0;
+      continue;
+    }
+    if (!std::isfinite(heights[i])) {  // no surface below (a drop)
+      t.obstacle[i] = 1;
       continue;
     }
     const double step = StepHeight(heights, c);

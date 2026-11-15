@@ -161,13 +161,14 @@ TEST(Mppi, NeverWalksIntoAClosedWall) {
   EXPECT_LT(run.pose.x, 0.0);
 }
 
-TEST(Mppi, VelocityModeTracksTheCommandInFreeSpace) {
+TEST(Mppi, VelocityModePassesTheCommandThroughInFreeSpace) {
   Mppi mppi;
   const Outcome run = Simulate(mppi, VelocityProblem({0.0, 0.0, 0.0}, {1.0, 0.2, 0.3}), [](Point2, double) { return false; },
-                           40);
-  EXPECT_NEAR(run.velocity.vx, 1.0, 0.1);
-  EXPECT_NEAR(run.velocity.vy, 0.2, 0.1);
-  EXPECT_NEAR(run.velocity.wz, 0.3, 0.1);
+                           1);
+  // Exactly the command: nothing is in the way.
+  EXPECT_EQ(run.velocity.vx, 1.0);
+  EXPECT_EQ(run.velocity.vy, 0.2);
+  EXPECT_EQ(run.velocity.wz, 0.3);
 }
 
 TEST(Mppi, VelocityModeStopsInFrontOfAWall) {

@@ -107,6 +107,26 @@ double Mppi::Rollout(const MppiProblem& problem, const std::vector<Velocity2>& c
   return cost;
 }
 
+double Mppi::MinClearance(const MppiProblem& problem, const std::vector<Velocity2>& controls,
+                          std::vector<Pose2>* poses) const {
+  const MppiParams& p = params_;
+  const double half_cell = problem.distance->geometry().resolution() / 2.0;
+  double clearance = std::numeric_limits<double>::infinity();
+  Pose2 pose = problem.start;
+  if (poses) poses->assign(1, pose);
+  for (const Velocity2& u : controls) {
+    pose = Integrate(pose, u, p.dt);
+    if (poses) poses->push_back(pose);
+    const double c = std::cos(pose.yaw), s = std::sin(pose.yaw);
+    for (const Point2& circle : p.footprint) {
+      const Point2 at{pose.x + c * circle.x - s * circle.y, pose.y + s * circle.x + c * circle.y};
+      clearance = std::min(clearance, Lookup(*problem.distance, at, std::numeric_limits<double>::infinity()) -
+                                          p.footprint_radius - half_cell);
+    }
+  }
+  return clearance;
+}
+
 MppiResult Mppi::Plan(const MppiProblem& problem) {
   const MppiParams& p = params_;
   const int horizon = p.horizon_steps;
@@ -117,6 +137,30 @@ MppiResult Mppi::Plan(const MppiProblem& problem) {
   } else {
     std::rotate(nominal_.begin(), nominal_.begin() + 1, nominal_.end());
     nominal_.back() = nominal_[horizon - 2];
+  }
+
+  // Velocity mode: where doing exactly what was asked keeps clear of
+  // obstacles (with the padding) over the whole horizon, do just that, as the
+  // robot does in free space. MPPI only steps in near obstacles, starting
+  // from the command.
+  if (problem.mode == MppiProblem::Mode::kVelocity) {
+    std::vector<Velocity2> commanded(horizon);
+    Velocity2 previous = problem.current;
+    for (int t = 0; t < horizon; ++t) {
+      commanded[t] = Limit(problem.commanded, previous, problem, p.dt);
+      previous = commanded[t];
+    }
+    const int look_ahead = std::clamp(static_cast<int>(std::lround(p.passthrough_horizon / p.dt)), 1, horizon);
+    const std::vector<Velocity2> near_term(commanded.begin(), commanded.begin() + look_ahead);
+    MppiResult result;
+    if (MinClearance(problem, near_term, nullptr) >= problem.padding) {
+      MinClearance(problem, commanded, &result.trajectory);  // for visualization
+      nominal_ = commanded;
+      result.controls = commanded;
+      result.command = problem.commanded;  // the base ramps up to it itself
+      result.collision_free = true;
+      return result;
+    }
   }
 
   std::normal_distribution<double> normal(0.0, 1.0);

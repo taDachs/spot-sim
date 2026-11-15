@@ -46,6 +46,11 @@ struct MppiParams {
   double heading_weight = 4.0;     ///< heading error^2 near the goal (goal mode)
   double arrive_weight = 2.0;      ///< speed^2 near the goal (goal mode)
   double goal_near_distance = 1.0; ///< within this, heading and speed at the goal count [m]
+  /// Velocity mode: the command passes through unchanged while following it
+  /// for this long keeps the padding (long enough to stop from full speed;
+  /// a longer look-ahead would make the robot shy of obstacles it isn't
+  /// heading into yet) [s].
+  double passthrough_horizon = 0.75;
   double tracking_weight = 4.0;    ///< (u - commanded)^2 per step (velocity mode)
   /// Heading error^2 against the commanded heading (start yaw + commanded
   /// turn rate * t) per step (velocity mode): the robot slides along an
@@ -100,6 +105,10 @@ struct MppiResult {
 /// included: they are just redrawn every cycle). Dead ends are avoided by
 /// the cost-to-go field, which knows the way around.
 ///
+/// In velocity mode the command passes through unchanged as long as
+/// following it keeps the padding for `passthrough_horizon`; MPPI steps in
+/// only near obstacles.
+///
 /// Deterministic: the same sequence of problems gives the same results.
 class Mppi {
  public:
@@ -119,6 +128,10 @@ class Mppi {
   /// whether a footprint circle hit an obstacle.
   double Rollout(const MppiProblem& problem, const std::vector<Velocity2>& controls, std::vector<Pose2>* poses,
                  bool* collided) const;
+
+  /// Smallest clearance of the footprint along `controls` (from the start).
+  double MinClearance(const MppiProblem& problem, const std::vector<Velocity2>& controls,
+                      std::vector<Pose2>* poses) const;
 
   MppiParams params_;
   std::vector<Velocity2> nominal_;
