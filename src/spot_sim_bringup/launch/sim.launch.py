@@ -39,6 +39,8 @@ def render_robot(context: LaunchContext, model_name: str) -> str:
             "arm_plugin": LaunchConfiguration("arm_plugin").perform(context),
             "cameras": str(cameras_enabled(context)).lower(),
             "camera_rate": LaunchConfiguration("camera_rate").perform(context),
+            "planner": str(flag(context, "planner")).lower(),
+            "planner_markers": str(flag(context, "planner_markers")).lower(),
         },
     ).toxml()
     # Gazebo resolves meshes through GZ_SIM_RESOURCE_PATH (set below).
@@ -127,6 +129,12 @@ def generate_launch_description() -> LaunchDescription:
                 "base_plugin", default_value="KinematicBaseSystem", description="Locomotion base plugin (spot_sim_gz)"
             ),
             DeclareLaunchArgument("arm", default_value="false", description="Mount the Spot Arm with gripper"),
+            DeclareLaunchArgument(
+                "planner", default_value="true", description="Local planner (obstacle avoidance, walking to goals)"
+            ),
+            DeclareLaunchArgument(
+                "planner_markers", default_value="false", description="Planner debug markers in the Gazebo GUI"
+            ),
             DeclareLaunchArgument(
                 "arm_plugin", default_value="KinematicArmSystem", description="Arm plugin (spot_sim_gz)"
             ),

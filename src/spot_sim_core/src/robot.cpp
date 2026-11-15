@@ -45,7 +45,8 @@ void Robot::Step(RobotTime now) {
   std::lock_guard<std::mutex> lock(firmware_mutex_);
   const auto estop_level = firmware_.estop.StopLevel(WallNow());
   firmware_.power.Step(estop_level, now);
-  firmware_.commands.Step(now, estop_level, firmware_.power, firmware_.locomotion, arm, odom_T_body);
+  firmware_.commands.Step(now, estop_level, firmware_.power, firmware_.locomotion, arm, odom_T_body,
+                          firmware_.navigation);
 }
 
 ArmCommand Robot::Arm() {
@@ -66,6 +67,16 @@ bosdyn::api::LeaseUseResult Robot::UseLease(const bosdyn::api::Lease& lease) {
 void Robot::SetLocomotionStatus(const LocomotionStatus& status) {
   std::lock_guard<std::mutex> lock(firmware_mutex_);
   firmware_.locomotion = status;
+}
+
+NavigationRequest Robot::Navigation() {
+  std::lock_guard<std::mutex> lock(firmware_mutex_);
+  return firmware_.commands.Navigation();
+}
+
+void Robot::SetNavigationStatus(const std::optional<NavigationStatus>& status) {
+  std::lock_guard<std::mutex> lock(firmware_mutex_);
+  firmware_.navigation = status;
 }
 
 void Robot::SetSnapshot(RobotSnapshot snapshot) {

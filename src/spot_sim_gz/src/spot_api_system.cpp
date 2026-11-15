@@ -75,9 +75,14 @@ JointReading Read(const gz::sim::Joint& joint, const gz::sim::EntityComponentMan
 
 class SpotApiSystem : public gz::sim::System,
                       public gz::sim::ISystemConfigure,
+                      public gz::sim::ISystemConfigurePriority,
                       public gz::sim::ISystemPreUpdate,
                       public gz::sim::ISystemPostUpdate {
  public:
+  /// First in each step: the commands it writes are read (and, for walking,
+  /// refined by the local planner at -50) by the base and arm plugins (0).
+  gz::sim::System::PriorityType ConfigurePriority() override { return -100; }
+
   void Configure(const gz::sim::Entity& /*entity*/, const std::shared_ptr<const sdf::Element>& sdf,
                  gz::sim::EntityComponentManager& /*ecm*/, gz::sim::EventManager& /*events*/) override {
     spot_sim::RobotConfig robot_config;
@@ -119,6 +124,13 @@ class SpotApiSystem : public gz::sim::System,
     }
     if (model_) {
       ecm.SetComponentData<components::SpotLocomotionCommand>(model_->Entity(), robot_->Locomotion());
+      spot_sim::NavigationRequest navigation = robot_->Navigation();
+      if (world_T_odom_) {
+        navigation.odom_x = world_T_odom_->Pos().X();
+        navigation.odom_y = world_T_odom_->Pos().Y();
+        navigation.odom_yaw = world_T_odom_->Rot().Yaw();
+      }
+      ecm.SetComponentData<components::SpotNavigationRequest>(model_->Entity(), navigation);
       if (robot_->config().has_arm) {
         ecm.SetComponentData<components::SpotArmCommand>(model_->Entity(), robot_->Arm());
       }
@@ -136,6 +148,11 @@ class SpotApiSystem : public gz::sim::System,
       if (const auto* status = ecm.Component<components::SpotLocomotionStatus>(model_->Entity())) {
         robot_->SetLocomotionStatus(status->Data());
       }
+      // A local planner (LocalPlannerSystem) reports here; without one there
+      // is no status and the robot can't walk to goals.
+      const auto* navigation = ecm.Component<components::SpotNavigationStatus>(model_->Entity());
+      robot_->SetNavigationStatus(navigation ? std::optional<spot_sim::NavigationStatus>(navigation->Data())
+                                             : std::nullopt);
     }
     snapshot_.acquisition_time = now;
     robot_->SetSnapshot(snapshot_);
@@ -350,4 +367,5 @@ class SpotApiSystem : public gz::sim::System,
 }  // namespace spot_sim_gz
 
 GZ_ADD_PLUGIN(spot_sim_gz::SpotApiSystem, gz::sim::System, spot_sim_gz::SpotApiSystem::ISystemConfigure,
-              spot_sim_gz::SpotApiSystem::ISystemPreUpdate, spot_sim_gz::SpotApiSystem::ISystemPostUpdate)
+              spot_sim_gz::SpotApiSystem::ISystemConfigurePriority, spot_sim_gz::SpotApiSystem::ISystemPreUpdate,
+              spot_sim_gz::SpotApiSystem::ISystemPostUpdate)

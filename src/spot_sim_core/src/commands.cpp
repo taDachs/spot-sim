@@ -16,6 +16,8 @@ namespace spot_sim {
 namespace api = bosdyn::api;
 
 namespace {
+
+constexpr double kPi = 3.14159265358979323846;
 constexpr std::size_t kMaxRememberedCommands = 1024;
 constexpr double kStowedTolerance = 0.05;          ///< [rad], as ManipulatorState.stow_state
 constexpr double kDefaultGripperSpeed = 3.0;       ///< [rad/s]
@@ -71,6 +73,36 @@ double Clamp(double value, double low, double high) {
   // An inconsistent limit (min > max) stops that axis rather than throwing.
   return low > high ? 0.0 : std::clamp(value, low, high);
 }
+
+/// SE2TrajectoryCommand feedback for the local planner's state.
+void FillTrajectoryFeedback(NavigationStatus::State state, api::SE2TrajectoryCommand::Feedback* feedback) {
+  using Feedback = api::SE2TrajectoryCommand::Feedback;
+  switch (state) {
+    case NavigationStatus::State::kAtGoal:
+      feedback->set_status(Feedback::STATUS_STOPPED);
+      feedback->set_final_goal_status(Feedback::FINAL_GOAL_STATUS_ACHIEVABLE);
+      feedback->set_body_movement_status(Feedback::BODY_STATUS_SETTLED);
+      break;
+    case NavigationStatus::State::kBlocked:
+      // Stopped short; the robot keeps trying and moves on if the way clears.
+      feedback->set_status(Feedback::STATUS_STOPPED);
+      feedback->set_final_goal_status(Feedback::FINAL_GOAL_STATUS_BLOCKED);
+      feedback->set_body_movement_status(Feedback::BODY_STATUS_SETTLED);
+      break;
+    case NavigationStatus::State::kNearGoal:
+      feedback->set_status(Feedback::STATUS_STOPPING);
+      feedback->set_final_goal_status(Feedback::FINAL_GOAL_STATUS_IN_PROGRESS);
+      feedback->set_body_movement_status(Feedback::BODY_STATUS_MOVING);
+      break;
+    case NavigationStatus::State::kMoving:
+    case NavigationStatus::State::kIdle:
+      feedback->set_status(Feedback::STATUS_IN_PROGRESS);
+      feedback->set_final_goal_status(Feedback::FINAL_GOAL_STATUS_IN_PROGRESS);
+      feedback->set_body_movement_status(Feedback::BODY_STATUS_MOVING);
+      break;
+  }
+}
+
 }  // namespace
 
 CommandSystem::CommandSystem(std::chrono::nanoseconds settle_timeout) : settle_timeout_(settle_timeout) {
@@ -174,6 +206,7 @@ uint32_t CommandSystem::Issue(BodyPart::Kind kind, LocomotionMode mode) {
   locomotion_.max_accel_y = defaults.max_accel_y;
   locomotion_.max_accel_rot = defaults.max_accel_rot;
   ++locomotion_.sequence;
+  navigation_.kind = NavigationRequest::Kind::kNone;  // walking commands set it after Issue()
   const uint32_t id = NewRecord();
   records_[id].body = BodyPart{std::move(kind), locomotion_.sequence};
   active_ = id;
@@ -304,6 +337,9 @@ CommandSystem::Issued CommandSystem::Mobility(const api::MobilityCommand::Reques
   if (request.has_se2_velocity_request()) {
     return Velocity(request.se2_velocity_request(), params, context);
   }
+  if (request.has_se2_trajectory_request()) {
+    return Trajectory(request.se2_trajectory_request(), params, context);
+  }
   return Rejection{api::RobotCommandResponse::STATUS_UNSUPPORTED, "mobility command not simulated yet"};
 }
 
@@ -372,6 +408,71 @@ CommandSystem::Issued CommandSystem::Velocity(const api::SE2VelocityCommand::Req
     if (slew.linear().y() > 0.0) locomotion_.max_accel_y = std::min(locomotion_.max_accel_y, slew.linear().y());
     if (slew.angular() > 0.0) locomotion_.max_accel_rot = std::min(locomotion_.max_accel_rot, slew.angular());
   }
+  navigation_ = NavigationFrom(params, NavigationRequest::Kind::kVelocity);
+  return id;
+}
+
+NavigationRequest CommandSystem::NavigationFrom(const api::spot::MobilityParams& params,
+                                                NavigationRequest::Kind kind) const {
+  NavigationRequest navigation;
+  navigation.kind = kind;
+  navigation.sequence = navigation_.sequence;
+  // Without obstacle_params the robot avoids obstacles with its default padding.
+  const auto& obstacles = params.obstacle_params();
+  navigation.avoid = !obstacles.disable_vision_body_obstacle_avoidance();
+  navigation.padding = params.has_obstacle_params() ? std::max(0.0, obstacles.obstacle_avoidance_padding())
+                                                    : kDefaultObstaclePadding;
+  const VelocityLimits limits = LimitsFrom(params);
+  navigation.max_vx = limits.max_x;
+  navigation.max_vy = limits.max_y;
+  navigation.max_wz = limits.max_rot;
+  return navigation;
+}
+
+CommandSystem::Issued CommandSystem::Trajectory(const api::SE2TrajectoryCommand::Request& request,
+                                                const api::spot::MobilityParams& params,
+                                                const CommandContext& context) {
+  if (!context.planner) {
+    return Rejection{api::RobotCommandResponse::STATUS_UNSUPPORTED,
+                     "se2_trajectory_request needs the local planner (sim.launch.py planner:=true)"};
+  }
+  const auto end_time = CheckEndTime("se2_trajectory_request", request.has_end_time(), request.end_time(),
+                                     context.clock_synced, context.now);
+  if (const auto* rejection = std::get_if<Rejection>(&end_time)) {
+    return *rejection;
+  }
+  const auto frame = ParsePlanarFrame(request.se2_frame_name());
+  if (!frame) {
+    return Rejection{api::RobotCommandResponse::STATUS_UNKNOWN_FRAME,
+                     std::string("se2_frame_name must be ") + kPlanarFrameNames};
+  }
+  if (request.trajectory().points().empty()) {
+    return Rejection{api::RobotCommandResponse::STATUS_INVALID_REQUEST, "se2_trajectory_request has no points"};
+  }
+  // The robot walks to the trajectory's last point (earlier points and their
+  // times are not followed).
+  const auto& last = request.trajectory().points().rbegin()->pose();
+  double x = last.position().x(), y = last.position().y(), yaw = last.angle();
+  if (*frame != RobotFrame::kOdom) {
+    // Relative to the body (flat_body has the body's heading) where the
+    // command arrived.
+    const double c = std::cos(context.odom_yaw), s = std::sin(context.odom_yaw);
+    const double ox = context.odom_x + c * x - s * y;
+    y = context.odom_y + s * x + c * y;
+    x = ox;
+    yaw += context.odom_yaw;
+  }
+
+  const uint32_t goal_sequence = navigation_.sequence + 1;
+  const uint32_t id = Issue(BodyPart::Trajectory{std::get<RobotTime>(end_time), goal_sequence}, LocomotionMode::kVelocity);
+  SetPosture(PostureFrom(params));
+  navigation_ = NavigationFrom(params, NavigationRequest::Kind::kGoal);
+  navigation_.sequence = goal_sequence;
+  navigation_.goal_x = x;
+  navigation_.goal_y = y;
+  navigation_.goal_yaw = std::remainder(yaw, 2.0 * kPi);
+  navigation_.position_tolerance = kGoalPositionTolerance;
+  navigation_.yaw_tolerance = kGoalYawTolerance;
   return id;
 }
 
@@ -428,6 +529,13 @@ api::RobotCommandFeedbackResponse CommandSystem::Feedback(const api::RobotComman
               }
               out->mutable_se2_velocity_feedback();
             },
+            [&](const BodyPart::Trajectory& trajectory) {
+              auto* out = mobility();
+              if (trajectory.timed_out) {
+                out->set_status(api::RobotCommandFeedbackStatus::STATUS_COMMAND_TIMED_OUT);
+              }
+              FillTrajectoryFeedback(trajectory.state, out->mutable_se2_trajectory_feedback());
+            },
             [&](const BodyPart::FullBodyStop&) { full_body()->mutable_stop_feedback(); },
             [&](const BodyPart::SelfRight&) {
               full_body()->mutable_selfright_feedback()->set_status(
@@ -466,18 +574,33 @@ api::RobotCommandFeedbackResponse CommandSystem::Feedback(const api::RobotComman
 
 void CommandSystem::Step(RobotTime now, api::EstopStopLevel estop_level, PowerSystem& power,
                          const LocomotionStatus& status, const std::optional<ArmSample>& arm,
-                         const Pose& odom_T_body) {
+                         const Pose& odom_T_body, const std::optional<NavigationStatus>& navigation) {
   if (arm) {
     measured_arm_ = arm;
   }
   odom_T_body_ = odom_T_body;
 
-  // Velocity commands end at their end time; the robot then stands still.
+  // The local planner's progress toward the current goal.
   if (BodyPart* body = ActiveBody()) {
-    if (auto* velocity = std::get_if<BodyPart::Velocity>(&body->kind); velocity && now >= velocity->end_time) {
-      velocity->timed_out = true;
+    if (auto* trajectory = std::get_if<BodyPart::Trajectory>(&body->kind);
+        trajectory && navigation && navigation->sequence == trajectory->navigation_sequence &&
+        navigation->state != NavigationStatus::State::kIdle) {
+      trajectory->state = navigation->state;
+    }
+  }
+
+  // Velocity and trajectory commands end at their end time; the robot then
+  // stands still.
+  if (BodyPart* body = ActiveBody()) {
+    auto* velocity = std::get_if<BodyPart::Velocity>(&body->kind);
+    auto* trajectory = std::get_if<BodyPart::Trajectory>(&body->kind);
+    const bool expired = (velocity && now >= velocity->end_time) || (trajectory && now >= trajectory->end_time);
+    if (expired) {
+      if (velocity) velocity->timed_out = true;
+      if (trajectory) trajectory->timed_out = true;
       active_.reset();
       locomotion_.mode = LocomotionMode::kStand;
+      navigation_.kind = NavigationRequest::Kind::kNone;
       locomotion_.v_x = locomotion_.v_y = locomotion_.v_rot = 0.0;
     }
   }

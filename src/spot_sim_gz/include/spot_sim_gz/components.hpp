@@ -6,9 +6,16 @@
 //   SpotApiSystem --SpotLocomotionCommand--> base plugin
 //   SpotApiSystem <--SpotLocomotionStatus--- base plugin
 //   SpotApiSystem --SpotArmCommand---------> arm plugin (robots with an arm)
+//   SpotApiSystem --SpotNavigationRequest--> local planner
+//   SpotApiSystem <--SpotNavigationStatus--- local planner
 //
-// Any base or arm implementation (kinematic, RL policy, ...) only needs this
-// header. The arm reports back through its joint positions.
+// The local planner sits between SpotApiSystem and the base: while walking
+// it rewrites the velocity of the SpotLocomotionCommand (system priorities:
+// SpotApiSystem -100, planner -50, base 0 by default). Everything else in
+// the command goes to the base untouched.
+//
+// Any base, arm or planner implementation (kinematic, RL policy, ...) only
+// needs this header. The arm reports back through its joint positions.
 
 #include <array>
 #include <istream>
@@ -20,6 +27,7 @@
 
 #include <spot_sim_core/arm.hpp>
 #include <spot_sim_core/locomotion.hpp>
+#include <spot_sim_core/navigation.hpp>
 
 namespace spot_sim {
 // Stream operators so Gazebo can serialize the components (state logging,
@@ -59,6 +67,28 @@ inline std::istream& operator>>(std::istream& in, ArmCommand& c) {
   c.joints = ArmJoints::FromArray(q);
   return in >> c.max_joint_speed >> c.gripper >> c.max_gripper_speed;
 }
+inline std::ostream& operator<<(std::ostream& out, const NavigationRequest& r) {
+  return out << static_cast<int>(r.kind) << ' ' << r.sequence << ' ' << r.avoid << ' ' << r.padding << ' ' << r.max_vx
+             << ' ' << r.max_vy << ' ' << r.max_wz << ' ' << r.goal_x << ' ' << r.goal_y << ' ' << r.goal_yaw << ' '
+             << r.position_tolerance << ' ' << r.yaw_tolerance << ' ' << r.odom_x << ' ' << r.odom_y << ' '
+             << r.odom_yaw;
+}
+inline std::istream& operator>>(std::istream& in, NavigationRequest& r) {
+  int kind = 0;
+  in >> kind >> r.sequence >> r.avoid >> r.padding >> r.max_vx >> r.max_vy >> r.max_wz >> r.goal_x >> r.goal_y >>
+      r.goal_yaw >> r.position_tolerance >> r.yaw_tolerance >> r.odom_x >> r.odom_y >> r.odom_yaw;
+  r.kind = static_cast<NavigationRequest::Kind>(kind);
+  return in;
+}
+inline std::ostream& operator<<(std::ostream& out, const NavigationStatus& s) {
+  return out << static_cast<int>(s.state) << ' ' << s.sequence;
+}
+inline std::istream& operator>>(std::istream& in, NavigationStatus& s) {
+  int state = 0;
+  in >> state >> s.sequence;
+  s.state = static_cast<NavigationStatus::State>(state);
+  return in;
+}
 }  // namespace spot_sim
 
 namespace gz {
@@ -74,6 +104,12 @@ GZ_SIM_REGISTER_COMPONENT("spot_sim.LocomotionStatus", SpotLocomotionStatus)
 
 using SpotArmCommand = Component<spot_sim::ArmCommand, class SpotArmCommandTag>;
 GZ_SIM_REGISTER_COMPONENT("spot_sim.ArmCommand", SpotArmCommand)
+
+using SpotNavigationRequest = Component<spot_sim::NavigationRequest, class SpotNavigationRequestTag>;
+GZ_SIM_REGISTER_COMPONENT("spot_sim.NavigationRequest", SpotNavigationRequest)
+
+using SpotNavigationStatus = Component<spot_sim::NavigationStatus, class SpotNavigationStatusTag>;
+GZ_SIM_REGISTER_COMPONENT("spot_sim.NavigationStatus", SpotNavigationStatus)
 
 }  // namespace components
 }  // namespace GZ_SIM_VERSION_NAMESPACE

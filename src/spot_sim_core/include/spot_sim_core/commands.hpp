@@ -19,6 +19,7 @@
 #include "spot_sim_core/arm_motion.hpp"
 #include "spot_sim_core/command_request.hpp"
 #include "spot_sim_core/locomotion.hpp"
+#include "spot_sim_core/navigation.hpp"
 #include "spot_sim_core/power.hpp"
 #include "spot_sim_core/robot_state.hpp"
 #include "spot_sim_core/stance.hpp"
@@ -44,15 +45,28 @@ struct CommandContext {
   /// Current body heading in odom, to express se2 velocities given in
   /// odom/vision in the body frame.
   double odom_yaw = 0.0;
+  /// Current body position in odom, to express goals given in the body frame.
+  double odom_x = 0.0, odom_y = 0.0;
+  /// A local planner is running (se2 trajectories need one).
+  bool planner = false;
 };
+
+/// Obstacle avoidance padding when MobilityParams gives none [m]. The SDK
+/// doesn't document the robot's default; this is a guess.
+inline constexpr double kDefaultObstaclePadding = 0.1;
+/// When a trajectory's goal counts as reached [m, rad].
+inline constexpr double kGoalPositionTolerance = 0.1;
+inline constexpr double kGoalYawTolerance = 0.1;
 
 /// RobotCommandService semantics: validates commands, turns them into a
 /// LocomotionCommand for the base (and an ArmCommand for the arm), and
 /// derives command feedback from the base's LocomotionStatus and the arm's
 /// measured joints.
 ///
-/// Supported so far: mobility stand / sit / stop / se2_velocity (with
-/// MobilityParams body_control posture and velocity limits), full-body stop,
+/// Supported so far: mobility stand / sit / stop / se2_velocity /
+/// se2_trajectory (with MobilityParams body_control posture, velocity limits
+/// and obstacle params; walking goes through the local planner, see
+/// NavigationRequest), full-body stop,
 /// safe power off and self-right; with an arm, named arm positions (stow,
 /// ready, carry), arm stop, joint moves, Cartesian moves, arm velocity and
 /// gaze (see ArmMotion), and the claw gripper.
@@ -81,18 +95,22 @@ class CommandSystem {
   bosdyn::api::RobotCommandFeedbackResponse Feedback(const bosdyn::api::RobotCommandFeedbackRequest& request,
                                                      const LocomotionStatus& status) const;
 
-  /// Advances command execution: expires velocity commands, sequences safe
-  /// power off and SETTLE_THEN_CUT, moves the arm along (`arm`: the arm as
-  /// measured, robots with an arm only; `odom_T_body`: the body pose).
+  /// Advances command execution: expires velocity and trajectory commands,
+  /// sequences safe power off and SETTLE_THEN_CUT, moves the arm along
+  /// (`arm`: the arm as measured, robots with an arm only; `odom_T_body`: the
+  /// body pose; `navigation`: the local planner's status, if one runs).
   void Step(RobotTime now, bosdyn::api::EstopStopLevel estop_level, PowerSystem& power,
             const LocomotionStatus& status, const std::optional<ArmSample>& arm = std::nullopt,
-            const Pose& odom_T_body = Pose{});
+            const Pose& odom_T_body = Pose{}, const std::optional<NavigationStatus>& navigation = std::nullopt);
 
   /// Current target for the locomotion base.
   LocomotionCommand Locomotion(bool motors_on) const;
 
   /// Current target for the arm.
   ArmCommand Arm(bool motors_on) const;
+
+  /// What the local planner should do while walking (goal in odom).
+  NavigationRequest Navigation() const { return navigation_; }
 
  private:
   /// The mobility or full-body part of a command, with the state that only
@@ -105,12 +123,19 @@ class CommandSystem {
       RobotTime end_time{0};
       bool timed_out = false;  ///< reached its end time
     };
+    struct Trajectory {
+      RobotTime end_time{0};
+      uint32_t navigation_sequence = 0;  ///< NavigationRequest it issued
+      bool timed_out = false;
+      /// The planner's latest report for this goal.
+      NavigationStatus::State state = NavigationStatus::State::kMoving;
+    };
     struct FullBodyStop {};
     struct SafePowerOff {
       bool done = false;  ///< motor power is off
     };
     struct SelfRight {};
-    using Kind = std::variant<Stand, Sit, MobilityStop, Velocity, FullBodyStop, SafePowerOff, SelfRight>;
+    using Kind = std::variant<Stand, Sit, MobilityStop, Velocity, Trajectory, FullBodyStop, SafePowerOff, SelfRight>;
 
     Kind kind;
     uint32_t sequence = 0;  ///< LocomotionCommand sequence it issued
@@ -138,6 +163,12 @@ class CommandSystem {
   Issued Mobility(const bosdyn::api::MobilityCommand::Request& request, const CommandContext& context);
   Issued Velocity(const bosdyn::api::SE2VelocityCommand::Request& request,
                   const bosdyn::api::spot::MobilityParams& params, const CommandContext& context);
+  Issued Trajectory(const bosdyn::api::SE2TrajectoryCommand::Request& request,
+                    const bosdyn::api::spot::MobilityParams& params, const CommandContext& context);
+  /// The planner request for walking with `params` (avoidance, padding,
+  /// velocity limits); keeps the current goal sequence.
+  NavigationRequest NavigationFrom(const bosdyn::api::spot::MobilityParams& params,
+                                   NavigationRequest::Kind kind) const;
   /// Validates a gripper request: why it cannot be executed, if it cannot.
   static std::optional<Rejection> CheckGripper(const bosdyn::api::GripperCommand::Request& request);
   ArmContext CurrentArmContext() const;
@@ -170,6 +201,7 @@ class CommandSystem {
   std::map<uint32_t, Record> records_;
   uint32_t next_id_ = 1;
   LocomotionCommand locomotion_;
+  NavigationRequest navigation_;  ///< what the local planner should do (kNone unless walking)
   std::optional<uint32_t> active_;  ///< command currently driving locomotion
   std::optional<RobotTime> settling_since_;
   uint32_t settle_sequence_ = 0;

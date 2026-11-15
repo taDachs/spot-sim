@@ -10,6 +10,9 @@
   <!-- Spot Arm with gripper, moved by its own plugin (swappable like the base). -->
   <xacro:arg name="arm" default="false"/>
   <xacro:arg name="arm_plugin" default="KinematicArmSystem"/>
+  <!-- Local planner: obstacle avoidance and walking to goals (spot_sim_gz). -->
+  <xacro:arg name="planner" default="true"/>
+  <xacro:arg name="planner_markers" default="false"/>
   <!-- Body cameras need rendering (the world's Sensors system); off by default. -->
   <xacro:arg name="cameras" default="false"/>
   <xacro:arg name="camera_rate" default="15"/>
@@ -20,6 +23,13 @@
   <gazebo>
     <plugin filename="$(arg base_plugin)" name="spot_sim_gz::$(arg base_plugin)"/>
   </gazebo>
+  <xacro:if value="$(arg planner)">
+    <gazebo>
+      <plugin filename="LocalPlannerSystem" name="spot_sim_gz::LocalPlannerSystem">
+        <debug_markers>$(arg planner_markers)</debug_markers>
+      </plugin>
+    </gazebo>
+  </xacro:if>
   <xacro:if value="$(arg arm)">
     <gazebo>
       <plugin filename="$(arg arm_plugin)" name="spot_sim_gz::$(arg arm_plugin)"/>

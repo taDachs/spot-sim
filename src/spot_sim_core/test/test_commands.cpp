@@ -439,3 +439,156 @@ TEST(Commands, SelfRightEndsSitting) {
   robot.BaseReaches(LocomotionState::kSitting);
   EXPECT_EQ(feedback(), api::SelfRightCommand::Feedback::STATUS_COMPLETED);
 }
+
+// --- Walking through the local planner -------------------------------------
+
+namespace {
+using spot_sim::NavigationRequest;
+using spot_sim::NavigationStatus;
+
+/// se2_trajectory_request to one point, as the SDK builds it
+/// (synchro_se2_trajectory_point_command).
+api::RobotCommandRequest GoTo(double x, double y, double yaw, spot_sim::RobotTime end_time,
+                              const std::string& frame = "odom",
+                              const api::spot::MobilityParams& params = api::spot::MobilityParams{}) {
+  api::RobotCommandRequest request;
+  auto* mobility = request.mutable_command()->mutable_synchronized_command()->mutable_mobility_command();
+  auto* trajectory = mobility->mutable_se2_trajectory_request();
+  *trajectory->mutable_end_time() = spot_sim::ToTimestamp(end_time);
+  trajectory->set_se2_frame_name(frame);
+  auto* pose = trajectory->mutable_trajectory()->add_points()->mutable_pose();
+  pose->mutable_position()->set_x(x);
+  pose->mutable_position()->set_y(y);
+  pose->set_angle(yaw);
+  mobility->mutable_params()->PackFrom(params);
+  return request;
+}
+
+/// A robot with a local planner (the context says so) at (1, 2) facing +y.
+spot_sim::CommandContext WithPlanner(spot_sim::RobotTime now = 0s) {
+  spot_sim::CommandContext context{true, true, now, M_PI / 2};
+  context.odom_x = 1.0;
+  context.odom_y = 2.0;
+  context.planner = true;
+  return context;
+}
+
+api::SE2TrajectoryCommand::Feedback TrajectoryFeedback(const api::RobotCommandFeedbackResponse& response) {
+  return response.feedback().synchronized_feedback().mobility_command_feedback().se2_trajectory_feedback();
+}
+}  // namespace
+
+TEST(Commands, VelocityAsksThePlannerToAvoidObstacles) {
+  Powered robot;
+  EXPECT_EQ(robot.commands.Navigation().kind, NavigationRequest::Kind::kNone);
+  robot.commands.Command(Velocity(0.5, 0.0, 0.0, 2s), LeaseOk(), {true, true, 1s});
+  NavigationRequest navigation = robot.commands.Navigation();
+  EXPECT_EQ(navigation.kind, NavigationRequest::Kind::kVelocity);
+  EXPECT_TRUE(navigation.avoid);
+  EXPECT_DOUBLE_EQ(navigation.padding, spot_sim::kDefaultObstaclePadding);
+  EXPECT_DOUBLE_EQ(navigation.max_vx, 1.6);
+
+  // obstacle_params: avoidance off, or another padding.
+  api::spot::MobilityParams params;
+  params.mutable_obstacle_params()->set_disable_vision_body_obstacle_avoidance(true);
+  params.mutable_obstacle_params()->set_obstacle_avoidance_padding(0.3);
+  auto request = Velocity(0.5, 0.0, 0.0, 2s);
+  request.mutable_command()->mutable_synchronized_command()->mutable_mobility_command()->mutable_params()->PackFrom(
+      params);
+  robot.commands.Command(request, LeaseOk(), {true, true, 1s});
+  navigation = robot.commands.Navigation();
+  EXPECT_FALSE(navigation.avoid);
+  EXPECT_DOUBLE_EQ(navigation.padding, 0.3);
+
+  // Standing still is no walking; neither is an expired velocity command.
+  robot.commands.Command(Stand(), LeaseOk(), {true, true, 1s});
+  EXPECT_EQ(robot.commands.Navigation().kind, NavigationRequest::Kind::kNone);
+  robot.commands.Command(Velocity(0.5, 0.0, 0.0, 2s), LeaseOk(), {true, true, 1s});
+  robot.commands.Step(2s, api::ESTOP_LEVEL_NONE, robot.power, robot.status);
+  EXPECT_EQ(robot.commands.Navigation().kind, NavigationRequest::Kind::kNone);
+}
+
+TEST(Commands, TrajectoryNeedsAPlannerAndValidRequests) {
+  Powered robot;
+  EXPECT_EQ(robot.commands.Command(GoTo(1, 0, 0, 5s), LeaseOk(), {true, true, 0s}).status(),
+            api::RobotCommandResponse::STATUS_UNSUPPORTED);
+  EXPECT_EQ(robot.commands.Command(GoTo(1, 0, 0, 5s, "hand"), LeaseOk(), WithPlanner()).status(),
+            api::RobotCommandResponse::STATUS_UNKNOWN_FRAME);
+  auto no_points = GoTo(1, 0, 0, 5s);
+  no_points.mutable_command()
+      ->mutable_synchronized_command()
+      ->mutable_mobility_command()
+      ->mutable_se2_trajectory_request()
+      ->mutable_trajectory()
+      ->clear_points();
+  EXPECT_EQ(robot.commands.Command(no_points, LeaseOk(), WithPlanner()).status(),
+            api::RobotCommandResponse::STATUS_INVALID_REQUEST);
+  EXPECT_EQ(robot.commands.Command(GoTo(1, 0, 0, 0s), LeaseOk(), WithPlanner(1s)).status(),
+            api::RobotCommandResponse::STATUS_EXPIRED);
+}
+
+TEST(Commands, TrajectoryGoalAndFeedbackFollowThePlanner) {
+  Powered robot;
+  const auto response = robot.commands.Command(GoTo(3.0, -1.0, 0.5, 10s), LeaseOk(), WithPlanner());
+  ASSERT_EQ(response.status(), api::RobotCommandResponse::STATUS_OK) << response.message();
+  const NavigationRequest navigation = robot.commands.Navigation();
+  EXPECT_EQ(navigation.kind, NavigationRequest::Kind::kGoal);
+  EXPECT_DOUBLE_EQ(navigation.goal_x, 3.0);
+  EXPECT_DOUBLE_EQ(navigation.goal_y, -1.0);
+  EXPECT_DOUBLE_EQ(navigation.goal_yaw, 0.5);
+  // The base walks (at the planner's velocity).
+  const auto locomotion = robot.commands.Locomotion(true);
+  EXPECT_EQ(locomotion.mode, LocomotionMode::kVelocity);
+  EXPECT_EQ(locomotion.v_x, 0.0);
+
+  const auto feedback = [&] {
+    return TrajectoryFeedback(robot.commands.Feedback(FeedbackFor(response.robot_command_id()), robot.status));
+  };
+  const auto step = [&](spot_sim::RobotTime t, NavigationStatus::State state, uint32_t sequence) {
+    robot.commands.Step(t, api::ESTOP_LEVEL_NONE, robot.power, robot.status, std::nullopt, {},
+                        NavigationStatus{state, sequence});
+  };
+  using Feedback = api::SE2TrajectoryCommand::Feedback;
+  EXPECT_EQ(feedback().status(), Feedback::STATUS_IN_PROGRESS);
+  step(1s, NavigationStatus::State::kNearGoal, navigation.sequence);
+  EXPECT_EQ(feedback().status(), Feedback::STATUS_STOPPING);
+  step(2s, NavigationStatus::State::kBlocked, navigation.sequence);
+  EXPECT_EQ(feedback().status(), Feedback::STATUS_STOPPED);
+  EXPECT_EQ(feedback().final_goal_status(), Feedback::FINAL_GOAL_STATUS_BLOCKED);
+  step(3s, NavigationStatus::State::kAtGoal, navigation.sequence + 7);  // about another goal: ignored
+  EXPECT_EQ(feedback().final_goal_status(), Feedback::FINAL_GOAL_STATUS_BLOCKED);
+  step(4s, NavigationStatus::State::kAtGoal, navigation.sequence);
+  EXPECT_EQ(feedback().status(), Feedback::STATUS_STOPPED);
+  EXPECT_EQ(feedback().final_goal_status(), Feedback::FINAL_GOAL_STATUS_ACHIEVABLE);
+  EXPECT_EQ(feedback().body_movement_status(), Feedback::BODY_STATUS_SETTLED);
+
+  // At the end time the robot stands; the feedback keeps the last state.
+  step(10s, NavigationStatus::State::kIdle, navigation.sequence);
+  EXPECT_EQ(robot.commands.Navigation().kind, NavigationRequest::Kind::kNone);
+  EXPECT_EQ(robot.commands.Locomotion(true).mode, LocomotionMode::kStand);
+  EXPECT_EQ(MobilityStatus(robot.commands.Feedback(FeedbackFor(response.robot_command_id()), robot.status)),
+            api::RobotCommandFeedbackStatus::STATUS_COMMAND_TIMED_OUT);
+  EXPECT_EQ(feedback().final_goal_status(), Feedback::FINAL_GOAL_STATUS_ACHIEVABLE);
+}
+
+TEST(Commands, BodyFrameGoalsAreFixedInOdomWhenTheCommandArrives) {
+  Powered robot;
+  // Robot at (1, 2) facing +y: 1 m ahead and 0.5 m to its left is (0.5, 3).
+  robot.commands.Command(GoTo(1.0, 0.5, 0.2, 10s, "body"), LeaseOk(), WithPlanner());
+  const NavigationRequest navigation = robot.commands.Navigation();
+  EXPECT_NEAR(navigation.goal_x, 0.5, 1e-9);
+  EXPECT_NEAR(navigation.goal_y, 3.0, 1e-9);
+  EXPECT_NEAR(navigation.goal_yaw, M_PI / 2 + 0.2, 1e-9);
+}
+
+TEST(Commands, EachTrajectoryIsANewGoalAndOthersOverrideIt) {
+  Powered robot;
+  const auto first = robot.commands.Command(GoTo(1, 0, 0, 10s), LeaseOk(), WithPlanner());
+  const uint32_t first_goal = robot.commands.Navigation().sequence;
+  robot.commands.Command(GoTo(1, 0, 0, 10s), LeaseOk(), WithPlanner());
+  EXPECT_GT(robot.commands.Navigation().sequence, first_goal);
+  EXPECT_EQ(MobilityStatus(robot.commands.Feedback(FeedbackFor(first.robot_command_id()), robot.status)),
+            api::RobotCommandFeedbackStatus::STATUS_COMMAND_OVERRIDDEN);
+  robot.commands.Command(Velocity(0.3, 0, 0, 10s), LeaseOk(), {true, true, 0s});
+  EXPECT_EQ(robot.commands.Navigation().kind, NavigationRequest::Kind::kVelocity);
+}

@@ -316,10 +316,14 @@ class RobotCommandServiceImpl final : public api::RobotCommandService::Service {
     return Handle(robot_, request, response, [&] {
       CommandContext context;
       context.clock_synced = robot_.time_sync().IsSynced(request->clock_identifier());
-      context.odom_yaw = robot_.Snapshot().odom_T_body.rotation.Yaw();
+      const Pose odom_T_body = robot_.Snapshot().odom_T_body;
+      context.odom_yaw = odom_T_body.rotation.Yaw();
+      context.odom_x = odom_T_body.position.x;
+      context.odom_y = odom_T_body.position.y;
       *response = robot_.WithFirmware([&](Firmware& fw) {
         const auto lease = fw.UseLease(request->lease());
         context.motors_on = fw.power.MotorsOn();
+        context.planner = fw.navigation.has_value();
         context.now = robot_.Now();
         return fw.commands.Command(*request, lease, context);
       });

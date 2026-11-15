@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -13,6 +14,7 @@
 #include "spot_sim_core/images.hpp"
 #include "spot_sim_core/lease.hpp"
 #include "spot_sim_core/locomotion.hpp"
+#include "spot_sim_core/navigation.hpp"
 #include "spot_sim_core/power.hpp"
 #include "spot_sim_core/robot_state.hpp"
 #include "spot_sim_core/time.hpp"
@@ -46,6 +48,8 @@ struct Firmware {
   PowerSystem power;
   CommandSystem commands;
   LocomotionStatus locomotion;  ///< last status reported by the base
+  /// Last status reported by the local planner; empty without one.
+  std::optional<NavigationStatus> navigation;
   GraspState grasp;
   bosdyn::api::GripperCameraParams gripper_camera_params;
 
@@ -80,6 +84,12 @@ class Robot {
 
   /// Status reported by the locomotion base (written by the simulation).
   void SetLocomotionStatus(const LocomotionStatus& status);
+
+  /// What the local planner should do (read by the simulation each step; the
+  /// goal is in odom).
+  NavigationRequest Navigation();
+  /// Status reported by the local planner; empty if there is none.
+  void SetNavigationStatus(const std::optional<NavigationStatus>& status);
 
   /// Replace the simulation-side snapshot (acquisition time set by caller).
   void SetSnapshot(RobotSnapshot snapshot);
