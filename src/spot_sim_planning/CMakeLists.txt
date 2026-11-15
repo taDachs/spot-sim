@@ -17,6 +17,7 @@ add_library(${PROJECT_NAME} SHARED
   src/cost_to_go.cpp
   src/distance_field.cpp
   src/height_map.cpp
+  src/mppi.cpp
   src/traversability.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
@@ -34,6 +35,7 @@ if(BUILD_TESTING)
     test/test_distance_field.cpp
     test/test_grid.cpp
     test/test_height_map.cpp
+    test/test_mppi.cpp
     test/test_traversability.cpp)
   target_link_libraries(${PROJECT_NAME}_test ${PROJECT_NAME})
 endif()

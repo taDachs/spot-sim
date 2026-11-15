@@ -83,4 +83,45 @@ Grid<float> ComputeCostToGo(const Traversability& traversability, const Grid<flo
   return cost_to_go;
 }
 
+Grid<float> ExtendCostToGo(const Grid<float>& cost_to_go, double radius, double weight) {
+  const GridGeometry& g = cost_to_go.geometry();
+  const double r = g.resolution();
+  Grid<float> out = cost_to_go;
+  // Distance travelled into the unreachable region, per cell.
+  std::vector<float> travelled(g.cell_count(), kInf);
+  using Entry = std::pair<float, std::size_t>;
+  std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> open;
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    if (std::isfinite(out[i])) {
+      travelled[i] = 0.0f;
+      open.push({out[i], i});
+    }
+  }
+  constexpr int kDx[8] = {1, -1, 0, 0, 1, 1, -1, -1};
+  constexpr int kDy[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+  const double diagonal = std::sqrt(2.0);
+  while (!open.empty()) {
+    const auto [cost, i] = open.top();
+    open.pop();
+    if (cost > out[i]) continue;
+    const CellIndex c = g.FromIndex(i);
+    for (int k = 0; k < 8; ++k) {
+      const CellIndex n{c.x + kDx[k], c.y + kDy[k]};
+      if (!g.Contains(n)) continue;
+      const std::size_t j = g.Index(n);
+      if (std::isfinite(cost_to_go[j])) continue;  // only fill unreachable cells
+      const double length = (k < 4 ? 1.0 : diagonal) * r;
+      const double distance = travelled[i] + length;
+      if (distance > radius) continue;
+      const float next = static_cast<float>(cost + weight * length);
+      if (next < out[j]) {
+        out[j] = next;
+        travelled[j] = static_cast<float>(distance);
+        open.push({next, j});
+      }
+    }
+  }
+  return out;
+}
+
 }  // namespace spot_sim::planning

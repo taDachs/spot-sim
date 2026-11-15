@@ -28,4 +28,10 @@ struct CostToGoParams {
 Grid<float> ComputeCostToGo(const Traversability& traversability, const Grid<float>& distance, Point2 goal,
                             const CostToGoParams& params = {});
 
+/// `cost_to_go` with its unreachable cells within `radius` [m] of a reachable
+/// one filled in: the reachable value plus `weight` times the distance. Lets
+/// a planner standing in the inflation zone next to an obstacle (impassable
+/// for paths, but where the robot can be) still find the way out.
+Grid<float> ExtendCostToGo(const Grid<float>& cost_to_go, double radius, double weight);
+
 }  // namespace spot_sim::planning
